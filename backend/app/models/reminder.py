@@ -6,8 +6,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Date, DateTime, Enum as SAEnum, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.types import GUID
 
 from app.core.database import Base
 
@@ -49,17 +50,17 @@ class ReminderType(str, Enum):
 class Reminder(Base):
     __tablename__ = "reminders"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    purchase_order_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=True)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    purchase_order_id: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("purchase_orders.id"), nullable=True)
     reminder_type: Mapped[ReminderType] = mapped_column(SAEnum(ReminderType, name="reminder_type"), nullable=False)
     title: Mapped[str] = mapped_column(String(150), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
-    assigned_to: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_to: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     priority: Mapped[ReminderPriority] = mapped_column(SAEnum(ReminderPriority, name="reminder_priority"), nullable=False)
     status: Mapped[ReminderStatus] = mapped_column(SAEnum(ReminderStatus, name="reminder_status"), nullable=False, default=ReminderStatus.open)
     escalation_level: Mapped[int] = mapped_column(default=0, nullable=False)
-    escalated_to: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    escalated_to: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     escalated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     escalation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

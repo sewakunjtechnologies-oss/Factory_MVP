@@ -6,8 +6,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Numeric, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.types import GUID
 
 from app.core.database import Base
 
@@ -15,7 +16,7 @@ from app.core.database import Base
 class Vehicle(Base):
     __tablename__ = "vehicles"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     registration_number: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     cbm_capacity: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False)

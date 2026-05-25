@@ -36,19 +36,20 @@ from app.api.v1.routes import (
     voice_ws,
 )
 from app.core.config import settings
-from app.core.redis import close_redis, ping_redis
+from app.core.database import create_all_tables
 from app.services.exceptions import DomainError
 from app.services.scheduler import shutdown_scheduler, start_scheduler
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # Provision schema on first boot (idempotent — no-op once the file exists).
+    await create_all_tables()
     start_scheduler()
     try:
         yield
     finally:
         shutdown_scheduler()
-        await close_redis()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -119,5 +120,4 @@ async def root() -> Dict[str, str]:
 
 @app.get("/health")
 async def health() -> Dict[str, str]:
-    redis_status = "ok" if await ping_redis() else "unavailable"
-    return {"app": "ok", "redis": redis_status}
+    return {"app": "ok"}

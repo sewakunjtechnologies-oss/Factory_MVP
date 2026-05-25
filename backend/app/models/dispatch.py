@@ -6,8 +6,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.types import GUID
 
 from app.core.database import Base
 from app.models.enums import DispatchCostType
@@ -16,8 +17,8 @@ from app.models.enums import DispatchCostType
 class DispatchLoad(Base):
     __tablename__ = "dispatch_loads"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    purchase_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    purchase_order_id: Mapped[UUID] = mapped_column(GUID(), ForeignKey("purchase_orders.id"), nullable=False)
     load_number: Mapped[str] = mapped_column(String(100), nullable=False)
     shipped_qty: Mapped[int] = mapped_column(Integer, nullable=False)
     vehicle_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -55,9 +56,9 @@ class DispatchLoad(Base):
     shortfall_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     linked_repair_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     linked_alteration_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    assigned_to: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_to: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     responsible_role: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    completed_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    completed_by: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     remarks: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

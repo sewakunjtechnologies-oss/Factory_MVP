@@ -6,8 +6,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.types import GUID
 
 from app.core.database import Base
 
@@ -16,9 +17,9 @@ class ProductFabricLine(Base):
     __tablename__ = "product_fabric_lines"
     __table_args__ = (UniqueConstraint("product_id", "fabric_code", name="product_fabric_lines_unique"),)
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     product_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("products.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

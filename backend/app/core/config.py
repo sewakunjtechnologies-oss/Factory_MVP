@@ -10,8 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Factory Owner MVP"
     api_v1_prefix: str = "/api/v1"
-    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/factory_mvp"
-    redis_url: str = "redis://localhost:6379/0"
+    database_url: str = "sqlite+aiosqlite:///./data/factory.db"
     secret_key: str = Field(default="change-me-in-production", min_length=16)
     access_token_expire_minutes: int = 60 * 8
     algorithm: str = "HS256"

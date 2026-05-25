@@ -15,7 +15,10 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY app ./app
-COPY schema.sql ./schema.sql
+
+# Persistent SQLite directory — the docker-compose bind-mount (or Fly volume)
+# mounts the host's data folder over this in production.
+RUN mkdir -p /app/data
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app

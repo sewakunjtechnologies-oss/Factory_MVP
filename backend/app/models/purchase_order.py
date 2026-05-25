@@ -6,8 +6,9 @@ from typing import List, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.types import GUID
 
 from app.core.database import Base
 from app.models.enums import PODesignStatus, POStatus
@@ -16,9 +17,9 @@ from app.models.enums import PODesignStatus, POStatus
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     po_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
-    product_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    product_id: Mapped[UUID] = mapped_column(GUID(), ForeignKey("products.id"), nullable=False)
     order_quantity_pcs: Mapped[int] = mapped_column(Integer, nullable=False)
     mrp: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     selling_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
@@ -31,7 +32,7 @@ class PurchaseOrder(Base):
         default=POStatus.fabric_check_pending,
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    fabric_design_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("fabric_designs.id"), nullable=True)
+    fabric_design_id: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("fabric_designs.id"), nullable=True)
     design_name_snapshot: Mapped[Optional[str]] = mapped_column(String(180), nullable=True)
     design_code_snapshot: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     design_image_url_snapshot: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -42,9 +43,9 @@ class PurchaseOrder(Base):
     )
     priority_level: Mapped[Optional[str]] = mapped_column(String(30), nullable=True, default="normal")
     priority_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    priority_updated_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    priority_updated_by: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     priority_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[Optional[UUID]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

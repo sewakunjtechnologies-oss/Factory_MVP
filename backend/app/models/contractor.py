@@ -5,8 +5,9 @@ from typing import List, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Enum, String, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.types import GUID
 
 from app.core.database import Base
 from app.models.enums import ContractorType
@@ -15,7 +16,7 @@ from app.models.enums import ContractorType
 class Contractor(Base):
     __tablename__ = "contractors"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     contractor_type: Mapped[ContractorType] = mapped_column(
         Enum(ContractorType, name="contractor_type"),

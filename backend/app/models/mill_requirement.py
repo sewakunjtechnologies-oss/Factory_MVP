@@ -6,8 +6,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Numeric, String, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.types import GUID
 
 from app.core.database import Base
 
@@ -21,8 +22,8 @@ class MillOrderRequirementStatus(str, Enum):
 class MillOrderRequirement(Base):
     __tablename__ = "mill_order_requirements"
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    purchase_order_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("purchase_orders.id"), nullable=False, index=True)
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    purchase_order_id: Mapped[UUID] = mapped_column(GUID(), ForeignKey("purchase_orders.id"), nullable=False, index=True)
     required_meters: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
     available_meters: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
     shortage_meters: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False)
