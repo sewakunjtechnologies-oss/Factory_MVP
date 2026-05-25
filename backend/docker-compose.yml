@@ -20,8 +20,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Phase 2.6 writes the SQLite file here.
+      # SQLite + frontend bundle are both bind-mounted in dev so we can rebuild
+      # the React app and hot-swap it without rebuilding the API container.
       - ./data:/app/data
+      - ./static:/app/static:ro
     restart: unless-stopped
 
   postgres:

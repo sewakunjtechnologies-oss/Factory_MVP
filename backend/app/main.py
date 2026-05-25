@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError, SQLAlchemyError
@@ -113,11 +113,49 @@ app.include_router(voice.router, prefix=f"{settings.api_v1_prefix}/voice", tags=
 app.include_router(voice_ws.router, prefix=f"{settings.api_v1_prefix}/voice", tags=["voice"])
 
 
-@app.get("/")
-async def root() -> Dict[str, str]:
-    return {"message": "Factory Owner MVP API"}
-
-
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"app": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Frontend static serving (production).
+#
+# In production the React build (`vite build` → `dist/`) is copied to /app/static
+# inside the container. We mount it so the whole app — UI + API — lives at a
+# single URL.
+#
+# - `/api/v1/*` → already handled by the routers above.
+# - `/health`   → JSON, for the load-balancer health check.
+# - Anything else → either a static file, or fall through to index.html so
+#                   client-side React Router can take over.
+# ---------------------------------------------------------------------------
+
+import pathlib
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent / "static"
+
+if _FRONTEND_DIR.exists():
+    # Assets / icons live under fixed subpaths — mount them as proper
+    # StaticFiles so caching headers + range requests behave correctly.
+    for sub in ("assets", "icons"):
+        if (_FRONTEND_DIR / sub).is_dir():
+            app.mount(f"/{sub}", StaticFiles(directory=_FRONTEND_DIR / sub), name=sub)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catch_all(full_path: str) -> FileResponse:
+        """Serve a top-level static file if it exists, else the SPA shell.
+
+        React Router handles client-side navigation for paths like /inventory
+        and /pos/create — those paths don't exist on disk, so we hand back
+        index.html and let React render.
+        """
+        # Never let this swallow the API.
+        if full_path.startswith("api/") or full_path == "health":
+            raise HTTPException(status_code=404)
+        candidate = _FRONTEND_DIR / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIR / "index.html")

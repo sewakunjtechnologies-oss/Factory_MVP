@@ -3,7 +3,7 @@ import { Bot, Download, FileText, Loader2, Mic, MicOff, Send, Sparkles, Trash2, 
 
 import { getApiErrorMessage } from "../api/axios";
 import { askAssistant, fetchArtifactBlob, type VoiceArtifact } from "../api/voice";
-import { ASSISTANT_SCENARIOS, SUGGESTED_OPENERS } from "../data/assistantScenarios";
+import { ASSISTANT_SCENARIOS, SUGGESTED_OPENERS, type AssistantScenarioGroup } from "../data/assistantScenarios";
 import { useVoiceStream } from "../hooks/useVoiceStream";
 import { useAssistantStore } from "../store/assistantStore";
 
@@ -160,7 +160,7 @@ export default function AssistantPage() {
               </p>
               <p className="mt-1 text-xs text-slate-500">Try one of these to get started:</p>
               <div className="mt-3 flex flex-wrap justify-center gap-2">
-                {SUGGESTED_OPENERS.map((p) => (
+                {SUGGESTED_OPENERS.map((p: string) => (
                   <button
                     key={p}
                     type="button"
@@ -232,14 +232,14 @@ export default function AssistantPage() {
             <p className="text-xs text-slate-500">Tap to send</p>
           </div>
           <div className="sidebar-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
-            {ASSISTANT_SCENARIOS.map((group) => (
+            {ASSISTANT_SCENARIOS.map((group: AssistantScenarioGroup) => (
               <div key={group.id} className="space-y-2">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{group.title}</p>
                   <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  {group.prompts.map((prompt) => (
+                  {group.prompts.map((prompt: string) => (
                     <button
                       key={prompt}
                       type="button"

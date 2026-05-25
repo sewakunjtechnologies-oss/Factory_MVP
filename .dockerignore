@@ -1,0 +1,28 @@
+# Don't ship junk into the build context — keeps `docker build` fast and the
+# image small.
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/.venv
+venv/
+backend/data
+**/_archive
+**/.git
+**/.gitignore
+**/android
+**/.DS_Store
+**/.env
+**/.env.production
+**/*.db
+**/*.db-wal
+**/*.db-shm
+backend/static
+backend/uploads
+backend/migrations
+backend/seed
+backend/tests
+backend/pytest.ini
+backend/schema.sql
+backend/docker-compose.yml
+backend/Dockerfile

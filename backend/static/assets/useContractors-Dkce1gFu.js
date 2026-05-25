@@ -1,0 +1,1 @@
+import{n as e}from"./axios-wPEHIxSN.js";import{S as t}from"./index-2BXaA4Xz.js";async function n(){return(await e.get(`/contractors`)).data}function r(){return t({queryKey:[`contractors`],queryFn:n,staleTime:6e4})}export{r as t};
