@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.docker.example
+alembic/versions/*.py
+dist/
+node_modules/
+.DS_Store

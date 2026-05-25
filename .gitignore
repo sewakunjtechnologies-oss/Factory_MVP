@@ -1,0 +1,29 @@
+# Build artifacts
+**/node_modules/
+**/dist/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+venv/
+
+# Local data + secrets
+**/data/
+backend/.env
+backend/uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# OS
+*.swp
+
+# Capacitor — generated, can be regenerated
+frontend/android/
+
+# Archives
+_archive/
