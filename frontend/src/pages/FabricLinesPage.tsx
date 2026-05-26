@@ -536,8 +536,8 @@ function StockEntryDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="stock-dialog-title">
-      <div className="panel w-full max-w-lg p-5">
+    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="stock-dialog-title">
+      <div className="panel my-4 w-full max-w-lg max-h-[90vh] overflow-y-auto p-5">
         <h3 id="stock-dialog-title" className="text-base font-bold text-slate-950">
           {preselected ? `Add stock — ${preselected.fabric_code}` : "Add stock entry"}
         </h3>

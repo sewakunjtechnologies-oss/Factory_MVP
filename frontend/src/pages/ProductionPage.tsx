@@ -210,7 +210,7 @@ export default function ProductionPage() {
                       Pending {formatNumber(stage.pending_qty)} · Move cap {formatNumber(Math.max(stage.approved_qty - stage.moved_to_next_qty, 0))}
                     </p>
                   </div>
-                  <div className="mt-3 grid grid-cols-4 gap-3 text-xs">
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 sm:gap-3">
                     <Metric label="Completed" value={stage.completed_qty} />
                     <Metric label="Approved" value={stage.approved_qty} />
                     <Metric label="Rejected" value={stage.rejected_qty} />

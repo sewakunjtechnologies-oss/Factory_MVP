@@ -61,6 +61,26 @@ textarea {
     @apply whitespace-nowrap text-right font-mono tabular-nums;
   }
 
+  /* Touch-friendly tap target for action buttons inside tables on mobile. */
+  .tap-target {
+    @apply min-h-[40px] min-w-[40px];
+  }
+
+  /* Wraps a horizontally-scrolling table on mobile. Adds a faint shadow on the
+   * right edge so the user notices there's more content off-screen. */
+  .table-scroll {
+    @apply -mx-px overflow-x-auto;
+    background:
+      linear-gradient(to right, white 30%, rgba(255, 255, 255, 0)),
+      linear-gradient(to right, rgba(0, 0, 0, 0), white 70%) 100% 0,
+      radial-gradient(farthest-side at 0 50%, rgba(15, 23, 42, 0.08), rgba(0, 0, 0, 0)),
+      radial-gradient(farthest-side at 100% 50%, rgba(15, 23, 42, 0.08), rgba(0, 0, 0, 0)) 100% 0;
+    background-repeat: no-repeat;
+    background-color: white;
+    background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
+
   /* Subtle scrollbar for narrow scroll regions (sidebar nav). Becomes visible on hover only. */
   .sidebar-scroll {
     scrollbar-width: thin;

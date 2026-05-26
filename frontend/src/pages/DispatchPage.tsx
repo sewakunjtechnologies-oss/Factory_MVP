@@ -93,7 +93,7 @@ export default function DispatchPage() {
         </div>
 
         <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
             <Metric label="Packed" value={formatNumber(packedQty)} />
             <Metric label="Shipped" value={formatNumber(shippedForSelected)} />
             <Metric label="Available" value={formatNumber(availableToShip)} strong />
@@ -227,21 +227,22 @@ export default function DispatchPage() {
         </form>
       </section>
 
-      <section className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="panel p-4">
+      <section className="min-w-0 space-y-4">
+        <div className="grid gap-3 grid-cols-2">
+          <div className="panel p-3 sm:p-4">
             <p className="label">Total Shipped</p>
-            <p className="mt-2 text-2xl font-bold text-slate-950">{formatNumber(totals.shippedQty)}</p>
+            <p className="mt-1 truncate text-lg font-bold tabular-nums text-slate-950 sm:text-2xl">{formatNumber(totals.shippedQty)}</p>
           </div>
-          <div className="panel p-4">
+          <div className="panel p-3 sm:p-4">
             <p className="label">Dispatch Cost</p>
-            <p className="mt-2 text-2xl font-bold text-slate-950">{formatCurrency(totals.dispatchCost)}</p>
+            <p className="mt-1 truncate text-lg font-bold tabular-nums text-slate-950 sm:text-2xl">{formatCurrency(totals.dispatchCost)}</p>
           </div>
         </div>
 
         <div className="panel overflow-hidden">
-          <div className="border-b border-slate-200 px-4 py-3">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <h2 className="text-sm font-semibold text-slate-950">All Loads</h2>
+            <span className="text-[10px] font-medium text-slate-400 lg:hidden">← swipe →</span>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -376,9 +377,16 @@ function costTypeLabel(costType: DispatchCostType): string {
 
 function Metric({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
-    <div>
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className={strong ? "mt-1 font-bold text-teal-800" : "mt-1 font-semibold text-slate-950"}>{value}</p>
+    <div className="min-w-0">
+      <p className="truncate text-[11px] text-slate-500">{label}</p>
+      <p
+        className={`mt-1 truncate text-sm tabular-nums sm:text-base ${
+          strong ? "font-bold text-teal-800" : "font-semibold text-slate-950"
+        }`}
+        title={value}
+      >
+        {value}
+      </p>
     </div>
   );
 }

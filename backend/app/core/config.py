@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     database_url: str = "sqlite+aiosqlite:///./data/factory.db"
     secret_key: str = Field(default="change-me-in-production", min_length=16)
-    access_token_expire_minutes: int = 60 * 8
+    # 7 days. Factory owner uses the app daily — re-login once a week is
+    # tolerable; anything shorter is friction. Override per env var if needed.
+    access_token_expire_minutes: int = 60 * 24 * 7
     algorithm: str = "HS256"
     gemini_api_key: Optional[str] = None
     # gemini_model: regular generateContent (REST). gemini_live_model: bidiGenerateContent
