@@ -88,6 +88,10 @@ async def answer_factory_question(db: AsyncSession, message: str) -> DirectAssis
             return DirectAssistantAnswer(_po_mill_requirement(po))
         return DirectAssistantAnswer(_list_mill_requirements(pos))
 
+    rate_answer = _answer_price_or_rate_query(pos, normalized)
+    if rate_answer is not None:
+        return DirectAssistantAnswer(rate_answer)
+
     po = _extract_po(pos, text)
     if po is not None:
         return DirectAssistantAnswer(await _answer_specific_po(db, po, normalized))
@@ -801,6 +805,69 @@ def _format_po_list(title: str, rows: Iterable[PurchaseOrder], *, limit: int = 1
     if len(items) > limit:
         lines.append(f"...and {len(items) - limit} more.")
     return "\n".join(lines)
+
+
+def _answer_price_or_rate_query(pos: list[PurchaseOrder], normalized: str) -> str | None:
+    """Answer owner questions such as "details of 69 price rate PO" from DB.
+
+    In the June data, phrases like "69 rate PO" usually refer to a rate/category
+    prefix in the product name, not only to a numeric selling_price column.
+    Keeping this deterministic prevents common demo questions from falling
+    through to Gemini when the API key is unavailable or invalid.
+    """
+    has_price_words = any(word in normalized for word in ("price", "rate", "mrp", "selling"))
+    has_po_words = "po" in normalized or "order" in normalized or "details" in normalized
+    if not (has_price_words and has_po_words):
+        return None
+
+    numbers = [token.replace(",", "") for token in re.findall(r"\d+(?:\.\d+)?", normalized)]
+    if not numbers:
+        return "Please tell me the price/rate number, for example: show me 69 rate POs."
+
+    matches: list[PurchaseOrder] = []
+    for po in pos:
+        product_name = (po.product.product_name if po.product else "").lower()
+        design_name = (po.design_name_snapshot or "").lower()
+        design_code = (po.design_code_snapshot or "").lower()
+        values = {
+            str(po.selling_price).rstrip("0").rstrip(".") if po.selling_price is not None else "",
+            str(po.mrp).rstrip("0").rstrip(".") if po.mrp is not None else "",
+        }
+        for number in numbers:
+            if (
+                number in values
+                or product_name.startswith(f"{number}-")
+                or product_name.startswith(f"{number} ")
+                or f" {number}-" in product_name
+                or design_name.startswith(f"{number}-")
+                or design_code.startswith(f"{number}-")
+            ):
+                matches.append(po)
+                break
+
+    if not matches:
+        return f"I could not find any PO matching price/rate {', '.join(numbers)} in the current database."
+
+    title = f"POs matching price/rate {', '.join(numbers)}"
+    lines = [f"{title}: {len(matches)} found."]
+    for po in matches[:15]:
+        product = po.product.product_name if po.product else po.design_name_snapshot or "Product not recorded"
+        selling = _format_money(po.selling_price, "selling price")
+        mrp = _format_money(po.mrp, "MRP")
+        lines.append(
+            f"- {po.po_number}: {product}, {po.order_quantity_pcs} pcs, "
+            f"{selling}, {mrp}, status {po.status.value}, deadline {po.promise_delivery_date.isoformat()}."
+        )
+    if len(matches) > 15:
+        lines.append(f"...and {len(matches) - 15} more.")
+    return "\n".join(lines)
+
+
+def _format_money(value: Decimal | None, label: str) -> str:
+    if value is None:
+        return f"{label} not recorded"
+    normalized = Decimal(value).normalize()
+    return f"{label} Rs {normalized:f}"
 
 
 def _po_line(po: PurchaseOrder, *, include_pending: bool = True) -> str:

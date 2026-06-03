@@ -33,6 +33,7 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.user import User
 from app.models.vehicle import Vehicle
 from app.services.voice import artifacts_scope, ask_async, use_session
+from app.services.voice.client import VoiceConfigError
 from app.services.voice.factory_queries import answer_factory_question
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class VoiceAskResponse(BaseModel):
 
 
 _GEMINI_USER_MESSAGES = {
+    400: "Gemini rejected the request. Check that GEMINI_API_KEY is valid for the Gemini API.",
     401: "The assistant is misconfigured (Gemini auth). Check the GEMINI_API_KEY env var.",
     403: "Gemini refused the request — check API quota and key permissions.",
     429: "The assistant is rate-limited right now. Please try again in a few seconds.",
@@ -88,6 +90,12 @@ async def ask_voice_assistant(
         detail = _GEMINI_USER_MESSAGES.get(code, "The assistant could not respond. Please try again.")
         logger.warning("voice/ask: Gemini returned %s — %s", code, error)
         raise HTTPException(status_code=502, detail=detail) from error
+    except VoiceConfigError as error:
+        logger.warning("voice/ask: configuration error — %s", error)
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini is not configured for this server. Add GEMINI_API_KEY to the Docker environment and restart the app.",
+        ) from error
     except Exception as error:  # noqa: BLE001
         logger.exception("voice/ask: unexpected failure")
         raise HTTPException(status_code=500, detail="The assistant hit an unexpected error.") from error
