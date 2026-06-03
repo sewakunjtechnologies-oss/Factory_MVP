@@ -134,7 +134,7 @@ def test_dispatch_api_requires_cost_fields() -> None:
         yield SimpleNamespace()
 
     async def fake_user() -> object:
-        return SimpleNamespace(id="user-id", role="dispatcher")
+        return SimpleNamespace(id="user-id", role="manager")
 
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = fake_user

@@ -18,6 +18,7 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 
 import { NotificationBell } from "../components/NotificationBell";
 import { NotificationToaster } from "../components/NotificationToaster";
+import { useApkAlertNotifications } from "../hooks/useApkAlertNotifications";
 import { useAuthStore } from "../store/authStore";
 import { cn } from "../utils/cn";
 
@@ -80,6 +81,7 @@ export function AppLayout() {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
+  useApkAlertNotifications();
 
   function handleLogout() {
     logout();

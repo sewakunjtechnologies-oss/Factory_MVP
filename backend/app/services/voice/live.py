@@ -181,13 +181,19 @@ async def run_live_session(websocket: WebSocket, db: AsyncSession) -> None:
         with use_session(db):
             async with client.aio.live.connect(model=get_live_model(), config=config) as session:
                 await websocket.send_text(json.dumps({"type": "ready"}))
+                tasks = [
+                    asyncio.create_task(_ws_to_gemini(websocket, session)),
+                    asyncio.create_task(_gemini_to_ws(websocket, session)),
+                ]
                 try:
-                    async with asyncio.TaskGroup() as tg:
-                        tg.create_task(_ws_to_gemini(websocket, session))
-                        tg.create_task(_gemini_to_ws(websocket, session))
-                except* WebSocketDisconnect:
+                    await asyncio.gather(*tasks)
+                except WebSocketDisconnect:
                     # Browser closed — normal end-of-call, swallow.
                     pass
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
     except Exception as exc:  # pragma: no cover -- surface to client
         logger.exception("voice/live: session error")
         try:

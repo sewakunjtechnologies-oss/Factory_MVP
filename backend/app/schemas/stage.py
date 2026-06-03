@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import StageName, StageStatus
+from app.models.enums import QualityAction, StageName, StageStatus
 
 
 class StageSummaryRead(BaseModel):
@@ -103,6 +103,36 @@ class StageProgressRead(BaseModel):
     moved_to_next_stage_today: int
     delay_days: int
     remarks: Optional[str]
+    assigned_to: Optional[UUID] = None
+    responsible_role: Optional[str] = None
+    completed_by: Optional[UUID] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class QualityFailureCreate(BaseModel):
+    stage_summary_id: UUID
+    allocation_id: Optional[UUID] = None
+    failed_qty: int = Field(gt=0)
+    resolved_qty: int = Field(default=0, ge=0)
+    action: QualityAction
+    reason: str = Field(min_length=1, max_length=255)
+    resolution: Optional[str] = Field(default=None, max_length=500)
+    action_date: date
+    remarks: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> "QualityFailureCreate":
+        if self.resolved_qty > self.failed_qty:
+            raise ValueError("resolved_qty cannot exceed failed_qty")
+        return self
+
+
+class QualityFailureRead(QualityFailureCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    pending_resolution_qty: int
     assigned_to: Optional[UUID] = None
     responsible_role: Optional[str] = None
     completed_by: Optional[UUID] = None

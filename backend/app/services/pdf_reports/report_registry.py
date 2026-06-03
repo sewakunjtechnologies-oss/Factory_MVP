@@ -12,6 +12,7 @@ from app.services.pdf_reports.generators.contractor_reports import (
 from app.services.pdf_reports.generators.dispatch_reports import (
     generate_dispatch_cost_report,
     generate_dispatch_ready_report,
+    generate_june_dispatch_report,
     generate_pending_dispatch_report,
 )
 from app.services.pdf_reports.generators.fabric_reports import (
@@ -83,6 +84,7 @@ REPORT_REGISTRY: Dict[str, ReportDefinition] = {
     "generate_pdf_qc_failures": ReportDefinition("QC Failures Report", generate_qc_failures_report),
     "generate_pdf_packing_risk": ReportDefinition("Packing Risk Report", generate_packing_risk_report),
     "generate_pdf_pending_dispatch": ReportDefinition("Pending Dispatch Report", generate_pending_dispatch_report),
+    "generate_pdf_june_dispatch": ReportDefinition("June Dispatch Report", generate_june_dispatch_report),
     "generate_pdf_dispatch_ready": ReportDefinition("Dispatch Ready Report", generate_dispatch_ready_report),
     "generate_pdf_dispatch_cost": ReportDefinition("Dispatch Cost Report", generate_dispatch_cost_report),
     "generate_pdf_alerts": ReportDefinition("Alerts Report", generate_alerts_report),

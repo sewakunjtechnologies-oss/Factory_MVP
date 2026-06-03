@@ -7,9 +7,11 @@
 venv/
 
 # Local data + secrets
+/.env
 **/data/
 backend/.env
 backend/uploads/
+backend/generated_reports/
 *.db
 *.db-wal
 *.db-shm
@@ -27,3 +29,7 @@ frontend/android/
 
 # Archives
 _archive/
+deliverables/
+
+# Local handoff scratch files
+VOICE_ASSISTANT_UPGRADE_COMPLETE.md

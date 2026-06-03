@@ -1,4 +1,4 @@
-import { api, API_BASE_URL } from "./axios";
+import { api, getApiBaseUrl } from "./axios";
 
 export interface VoiceArtifact {
   type: string;
@@ -21,7 +21,7 @@ export async function askAssistant(message: string): Promise<VoiceAskResponse> {
 // Strip the API_BASE_URL path prefix (e.g. "/api/v1") so axios doesn't double it.
 function toRelativeApiPath(fullPath: string): string {
   try {
-    const basePrefix = new URL(API_BASE_URL).pathname.replace(/\/$/, "");
+    const basePrefix = new URL(getApiBaseUrl()).pathname.replace(/\/$/, "");
     if (basePrefix && fullPath.startsWith(basePrefix + "/")) {
       return fullPath.slice(basePrefix.length);
     }

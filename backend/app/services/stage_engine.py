@@ -13,6 +13,7 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.stage import (
     ContractorAllocation,
     PackingOutput,
+    QualityFailure,
     StageCostEntry,
     StageProgressEntry,
     StageSummary,
@@ -20,6 +21,7 @@ from app.models.stage import (
 from app.schemas.stage import (
     ContractorAllocationCreate,
     PackingOutputCreate,
+    QualityFailureCreate,
     StageCostEntryCreate,
     StageProgressCreate,
 )
@@ -49,6 +51,59 @@ async def list_stage_progress_entries(db: AsyncSession, purchase_order_id: UUID)
         .order_by(StageProgressEntry.entry_date.desc(), StageProgressEntry.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def list_quality_failures(db: AsyncSession, purchase_order_id: UUID) -> list[QualityFailure]:
+    result = await db.execute(
+        select(QualityFailure)
+        .join(StageSummary)
+        .where(StageSummary.purchase_order_id == purchase_order_id)
+        .order_by(QualityFailure.action_date.desc(), QualityFailure.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def record_quality_failure(
+    db: AsyncSession,
+    payload: QualityFailureCreate,
+    *,
+    actor_id: UUID | None = None,
+    actor_role: UserRole | None = None,
+) -> QualityFailure:
+    stage_summary = await _get_stage_summary_by_id(db, payload.stage_summary_id)
+    _enforce_stage_verifier_role(stage_summary.stage, actor_role)
+
+    allocation: ContractorAllocation | None = None
+    if payload.allocation_id is not None:
+        allocation = await db.get(ContractorAllocation, payload.allocation_id)
+        if allocation is None or allocation.stage_summary_id != stage_summary.id:
+            raise DomainError(status_code=400, detail="allocation does not belong to the selected PO stage")
+
+    pending_resolution_qty = payload.failed_qty - payload.resolved_qty
+    failure = QualityFailure(
+        **payload.model_dump(),
+        pending_resolution_qty=pending_resolution_qty,
+    )
+    db.add(failure)
+    await db.flush()
+    await log_audit_event(
+        db,
+        action_type="quality_failure_recorded",
+        entity_type="quality_failure",
+        entity_id=str(failure.id),
+        purchase_order_id=stage_summary.purchase_order_id,
+        performed_by=actor_id,
+        role=actor_role.value if actor_role else None,
+        new_value_json={
+            "stage": stage_summary.stage.value,
+            "failed_qty": payload.failed_qty,
+            "resolved_qty": payload.resolved_qty,
+            "action": payload.action.value,
+        },
+    )
+    await db.commit()
+    await db.refresh(failure)
+    return failure
 
 
 async def create_contractor(db: AsyncSession, payload: object) -> Contractor:

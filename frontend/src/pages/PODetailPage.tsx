@@ -1,8 +1,12 @@
-import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowLeft, Package, Scissors, Shirt, Truck } from "lucide-react";
+import { useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { AlertTriangle, ArrowLeft, FileText, Layers, Package, Pencil, Scissors, Shirt, Trash2, Truck } from "lucide-react";
 
+import { getApiErrorMessage } from "../api/axios";
+import { fetchQuotationPdfBlob } from "../api/quotations";
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
+import { POEditDialog } from "../components/POEditDialog";
 import { ProgressBar } from "../components/ProgressBar";
 import { StageProgressCard } from "../components/StageProgressCard";
 import { StatusBadge } from "../components/StatusBadge";
@@ -11,13 +15,19 @@ import { useDispatchLoads } from "../hooks/useDispatch";
 import { useCapacityForecast, useCuttingAnalysis, useDueReminders, useFabricIssues, useFabricMillOrders, useMillFollowupsDue } from "../hooks/useOperations";
 import { usePackingAnalysis } from "../hooks/usePacking";
 import { useAllocations, useQualityFailures, useStageProgressEntries } from "../hooks/useProduction";
-import { usePurchaseOrder } from "../hooks/usePurchaseOrders";
+import { useDeletePurchaseOrder, usePurchaseOrder } from "../hooks/usePurchaseOrders";
 import { getContractorCompletionPercent, getPOCompletedQty, getPOPendingQty, productionStages } from "../utils/factoryMetrics";
 import { formatCurrency, formatDate, formatMeters, formatNumber, stageShortName } from "../utils/format";
 
 export default function PODetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const poQuery = usePurchaseOrder(id);
+  const deletePO = useDeletePurchaseOrder();
+  const [editOpen, setEditOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [quotationBusy, setQuotationBusy] = useState(false);
+  const [quotationError, setQuotationError] = useState<string | null>(null);
   const allocationQuery = useAllocations(id);
   const contractorsQuery = useContractors();
   const dispatchQuery = useDispatchLoads(id);
@@ -48,6 +58,28 @@ export default function PODetailPage() {
   const overallPercent = po.order_quantity_pcs > 0 ? Math.round((completedQty / po.order_quantity_pcs) * 100) : 0;
   const contractorNameById = new Map((contractorsQuery.data ?? []).map((contractor) => [contractor.id, contractor.name]));
 
+  async function handleDelete() {
+    if (!po) return;
+    await deletePO.mutateAsync(po.id);
+    navigate("/pos", { replace: true });
+  }
+
+  async function handleQuotationPdf() {
+    if (!po) return;
+    setQuotationBusy(true);
+    setQuotationError(null);
+    try {
+      const blob = await fetchQuotationPdfBlob(po.po_number);
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setQuotationError(getApiErrorMessage(err));
+    } finally {
+      setQuotationBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -62,16 +94,69 @@ export default function PODetailPage() {
           </div>
           <p className="mt-1 text-sm text-slate-500">Promise date: {formatDate(po.promise_delivery_date)}</p>
         </div>
-        <div className="panel min-w-64 p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-semibold text-slate-700">Overall dispatch</span>
-            <span className="font-bold text-slate-950">{overallPercent}%</span>
+        <div className="flex flex-wrap items-stretch gap-3">
+          <div className="panel min-w-56 flex-1 p-4">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-semibold text-slate-700">Overall dispatch</span>
+              <span className="font-bold text-slate-950">{overallPercent}%</span>
+            </div>
+            <div className="mt-3">
+              <ProgressBar value={overallPercent} tone={pendingQty > 0 ? "yellow" : "green"} />
+            </div>
           </div>
-          <div className="mt-3">
-            <ProgressBar value={overallPercent} tone={pendingQty > 0 ? "yellow" : "green"} />
+          <div className="flex flex-col gap-2">
+            <button type="button" className="secondary-button" onClick={() => void handleQuotationPdf()} disabled={quotationBusy}>
+              <FileText className="h-4 w-4" /> {quotationBusy ? "Preparing" : "Quotation PDF"}
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setEditOpen(true)}>
+              <Pencil className="h-4 w-4" /> Edit
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-4 text-sm font-semibold text-red-700 transition hover:border-red-400 hover:bg-red-50"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="h-4 w-4" /> Delete
+            </button>
           </div>
         </div>
       </div>
+      {quotationError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+          {quotationError}
+        </div>
+      ) : null}
+
+      {/* Stock interlink card — what's already in inventory for this PO's fabric */}
+      <section className="panel border-teal-200 bg-teal-50/50 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Layers className="h-5 w-5 text-teal-700" aria-hidden="true" />
+            <div>
+              <h2 className="text-sm font-bold text-slate-950">Inventory link</h2>
+              <p className="text-xs text-slate-500">
+                Fabric: <span className="font-mono">{po.design_code_snapshot ?? "—"}</span>
+                {po.product ? <> · Category <span className="font-mono">{po.product.product_name}</span></> : null}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Metric label="Ordered" value={formatNumber(po.order_quantity_pcs)} suffix="pcs" />
+            <Metric label="Already in stock" value={formatNumber(po.pieces_in_stock_for_fabric)} suffix="pcs" tone="success" />
+            <Metric label="Still to make" value={formatNumber(po.pieces_to_make)} suffix="pcs" tone={po.pieces_to_make > 0 ? "alert" : undefined} />
+          </div>
+        </div>
+        {po.pieces_in_stock_for_fabric > 0 && po.pieces_in_stock_for_fabric >= po.order_quantity_pcs ? (
+          <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+            ✓ Full PO can be filled from existing stock — no fabric to cut or stitch.
+          </p>
+        ) : po.pieces_in_stock_for_fabric > 0 ? (
+          <p className="mt-3 rounded-md border border-teal-200 bg-white px-3 py-2 text-xs text-teal-900">
+            Inventory page shows <span className="font-bold">{formatNumber(po.pieces_in_stock_for_fabric)} pcs</span> of this fabric in stock.
+            Only <span className="font-bold">{formatNumber(po.pieces_to_make)} pcs</span> need to be made for this PO.
+          </p>
+        ) : null}
+      </section>
 
       <section className="grid gap-4 lg:grid-cols-3">
         <div className="panel p-4">
@@ -337,6 +422,60 @@ export default function PODetailPage() {
           </table>
         </div>
       </section>
+
+      {editOpen ? (
+        <POEditDialog
+          po={po}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => setEditOpen(false)}
+        />
+      ) : null}
+
+      {confirmDelete ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center" role="dialog" aria-modal="true">
+          <div className="panel w-full max-w-md p-5">
+            <h3 className="text-base font-bold text-slate-950">Delete PO {po.po_number}?</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              This permanently removes the purchase order and every linked record (fabric plan, stage progress, dispatch loads,
+              reminders). Inventory rows are <span className="font-semibold">not</span> affected.
+            </p>
+            {deletePO.isError ? (
+              <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {(deletePO.error as Error)?.message ?? "Could not delete."}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="secondary-button" onClick={() => setConfirmDelete(false)} disabled={deletePO.isPending}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+                onClick={() => void handleDelete()}
+                disabled={deletePO.isPending}
+              >
+                {deletePO.isPending ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Metric({ label, value, suffix, tone }: { label: string; value: string; suffix?: string; tone?: "alert" | "success" }) {
+  const cls =
+    tone === "alert" ? "text-red-700"
+    : tone === "success" ? "text-emerald-700"
+    : "text-slate-950";
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className={`mt-0.5 text-lg font-bold tabular-nums ${cls}`}>
+        {value}
+        {suffix ? <span className="ml-1 text-xs font-normal text-slate-500">{suffix}</span> : null}
+      </p>
     </div>
   );
 }

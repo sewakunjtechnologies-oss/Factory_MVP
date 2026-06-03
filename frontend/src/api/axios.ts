@@ -2,12 +2,30 @@ import axios, { AxiosError } from "axios";
 
 import { useAuthStore } from "../store/authStore";
 
-export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api/v1";
+export const DEFAULT_API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "https://added-edward-portable-bali.trycloudflare.com";
+
+function normalizeApiBaseUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return DEFAULT_API_BASE_URL;
+  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+}
+
+export function getApiBaseUrl(): string {
+  return normalizeApiBaseUrl(DEFAULT_API_BASE_URL);
+}
+
+export function setApiBaseUrl(value: string): string {
+  const normalized = normalizeApiBaseUrl(value);
+  api.defaults.baseURL = normalized;
+  return normalized;
+}
+
+export const API_BASE_URL = getApiBaseUrl();
 
 export const API_ORIGIN = (() => {
   try {
-    return new URL(API_BASE_URL).origin;
+    return new URL(getApiBaseUrl()).origin;
   } catch {
     return "";
   }
@@ -16,12 +34,18 @@ export const API_ORIGIN = (() => {
 export function resolveAssetUrl(url: string | null | undefined): string {
   if (!url) return "";
   if (/^(?:https?:)?\/\//i.test(url) || url.startsWith("data:")) return url;
-  if (url.startsWith("/")) return `${API_ORIGIN}${url}`;
+  if (url.startsWith("/")) {
+    try {
+      return `${new URL(getApiBaseUrl()).origin}${url}`;
+    } catch {
+      return url;
+    }
+  }
   return url;
 }
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   timeout: 15000,
   headers: {
     "Content-Type": "application/json",
@@ -51,6 +75,12 @@ export function getApiErrorMessage(error: unknown): string {
     const detail = error.response?.data?.detail;
     if (typeof detail === "string") {
       return detail;
+    }
+    if (error.code === "ERR_NETWORK") {
+      return `Cannot reach the factory server at ${getApiBaseUrl()}. Check the internet connection and Cloudflare tunnel.`;
+    }
+    if (error.code === "ECONNABORTED") {
+      return `The factory server did not respond in time at ${getApiBaseUrl()}.`;
     }
     return error.message;
   }

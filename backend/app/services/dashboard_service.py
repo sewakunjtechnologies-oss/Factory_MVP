@@ -12,10 +12,12 @@ from app.models.stage import StageProgressEntry, StageSummary
 from app.schemas.dashboard import BottleneckRead, DashboardPORead, OwnerDashboardRead
 from app.services.alert_engine import list_alerts
 from app.services.dispatch_engine import get_shipped_quantity
+from app.services.operational_backfill import ensure_all_operational_data
 from app.services.reminder_service import list_due_reminders
 
 
 async def get_owner_dashboard(db: AsyncSession) -> OwnerDashboardRead:
+    await ensure_all_operational_data(db)
     result = await db.execute(
         select(PurchaseOrder)
         .options(
@@ -29,7 +31,8 @@ async def get_owner_dashboard(db: AsyncSession) -> OwnerDashboardRead:
     today = date.today()
     for po in result.scalars().all():
         shipped_qty = await get_shipped_quantity(db, po.id)
-        pending_qty = max(po.order_quantity_pcs - shipped_qty, 0)
+        completed_qty = _completed_or_dispatched_qty(po, shipped_qty)
+        pending_qty = max(po.order_quantity_pcs - completed_qty, 0)
         bottleneck = _find_bottleneck(po.stage_summaries)
         shipment_risk = pending_qty > 0 and (po.promise_delivery_date - today).days <= 2
         fabric_shortage_m = float(po.fabric_plan.shortage_m) if po.fabric_plan and po.fabric_plan.status == FabricPlanStatus.shortage else 0.0
@@ -40,7 +43,7 @@ async def get_owner_dashboard(db: AsyncSession) -> OwnerDashboardRead:
                 product=po.product.product_name if po.product else "Product",
                 status=po.status.value,
                 order_quantity_pcs=po.order_quantity_pcs,
-                completed_qty=shipped_qty,
+                completed_qty=completed_qty,
                 pending_qty=pending_qty,
                 bottleneck_stage=bottleneck.stage if bottleneck else None,
                 shipment_risk=shipment_risk,
@@ -64,6 +67,14 @@ async def get_owner_dashboard(db: AsyncSession) -> OwnerDashboardRead:
         top_bottleneck_stages=_top_bottlenecks(rows),
         action_cards=_action_cards(rows, alerts, reminders),
     )
+
+
+def _completed_or_dispatched_qty(po: PurchaseOrder, shipped_qty: int) -> int:
+    dispatch_stage = next((stage for stage in po.stage_summaries if stage.stage == StageName.dispatch), None)
+    stage_completed = int(dispatch_stage.completed_qty or 0) if dispatch_stage else 0
+    if po.status.value == "completed":
+        return max(int(po.order_quantity_pcs), shipped_qty, stage_completed)
+    return max(shipped_qty, stage_completed)
 
 
 def _find_bottleneck(stages: list[StageSummary]) -> StageSummary | None:

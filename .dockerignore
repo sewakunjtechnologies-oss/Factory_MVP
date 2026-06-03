@@ -19,8 +19,8 @@ backend/data
 **/*.db-shm
 backend/static
 backend/uploads
+backend/generated_reports
 backend/migrations
-backend/seed
 backend/tests
 backend/pytest.ini
 backend/schema.sql

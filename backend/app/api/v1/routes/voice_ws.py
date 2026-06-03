@@ -44,7 +44,7 @@ async def _resolve_owner(token: str, db: AsyncSession) -> User | None:
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
         return None
-    if user.role not in (UserRole.owner, UserRole.admin):
+    if user.role != UserRole.owner:
         return None
     return user
 

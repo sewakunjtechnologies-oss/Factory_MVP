@@ -45,9 +45,10 @@ export function MillSplitForm({ purchaseOrderId, shortageMeters }: MillSplitForm
     createSplit.mutate(
       {
         purchase_order_id: purchaseOrderId,
-        splits: rows.map(({ rowId: _rowId, ...split }) => ({
-          ...split,
+        splits: rows.map((split) => ({
+          mill_name: split.mill_name,
           split_percent: Number(split.split_percent),
+          committed_delivery_date: split.committed_delivery_date,
           ordered_width: split.ordered_width ? Number(split.ordered_width) : null,
           ordered_gsm: split.ordered_gsm ? Number(split.ordered_gsm) : null,
           ordered_rate_per_meter: split.ordered_rate_per_meter ? Number(split.ordered_rate_per_meter) : null,

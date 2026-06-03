@@ -9,27 +9,51 @@ import {
   type DispatchPlanResponse,
   type VehicleRead,
 } from "../api/dispatchPlanner";
+import { useProductFabricLines } from "../hooks/useProductFabricLines";
 import { useProducts } from "../hooks/usePurchaseOrders";
 import type { UUID } from "../types/api";
 import { formatNumber } from "../utils/format";
 
 const CATEGORY_PRODUCT_KIND = "category";
+const PDF_VEHICLE_LENGTHS = new Set(["14 feet", "15 feet", "17 feet", "20 feet", "24 feet", "26 feet"]);
 
 export function DispatchPlannerCard() {
   const productsQuery = useProducts();
+  const fabricLinesQuery = useProductFabricLines();
   const vehiclesQuery = useQuery({
     queryKey: ["vehicles"],
     queryFn: () => fetchVehicles(false),
     staleTime: 60_000,
   });
 
-  const categories = useMemo(
-    () =>
-      (productsQuery.data ?? [])
-        .filter((p) => p.product_category === CATEGORY_PRODUCT_KIND)
-        .map((p) => p.product_name)
-        .sort(),
+  const productNameById = useMemo(
+    () => new Map((productsQuery.data ?? []).map((product) => [product.id, product.product_name])),
     [productsQuery.data],
+  );
+  const categories = useMemo(() => {
+    const readyCategories = new Set<string>();
+    (fabricLinesQuery.data ?? []).forEach((line) => {
+      const productName = productNameById.get(line.product_id);
+      const hasReadyPieces = Number(line.pieces_in_stock || 0) > 0;
+      const hasBaleSpec =
+        Number(line.pieces_per_bale || 0) > 0 &&
+        Number(line.bale_size_cbm || 0) > 0 &&
+        Number(line.bale_weight_kg || 0) > 0;
+      if (productName && hasReadyPieces && hasBaleSpec) {
+        readyCategories.add(productName);
+      }
+    });
+    if (readyCategories.size > 0) {
+      return Array.from(readyCategories).sort();
+    }
+    return (productsQuery.data ?? [])
+      .filter((p) => p.product_category === CATEGORY_PRODUCT_KIND)
+      .map((p) => p.product_name)
+      .sort();
+  }, [fabricLinesQuery.data, productNameById, productsQuery.data]);
+  const vehicles = useMemo(
+    () => (vehiclesQuery.data ?? []).filter((vehicle) => PDF_VEHICLE_LENGTHS.has(vehicle.name.toLowerCase())),
+    [vehiclesQuery.data],
   );
 
   const [vehicleId, setVehicleId] = useState<UUID | "">("");
@@ -40,17 +64,18 @@ export function DispatchPlannerCard() {
 
   // Default: pick the smallest vehicle and put all categories in alphabetical order.
   useEffect(() => {
-    if (!vehicleId && (vehiclesQuery.data?.length ?? 0) > 0) {
-      setVehicleId(vehiclesQuery.data![0].id);
+    if (!vehicleId && vehicles.length > 0) {
+      setVehicleId(vehicles[0].id);
     }
-  }, [vehiclesQuery.data, vehicleId]);
+  }, [vehicles, vehicleId]);
   useEffect(() => {
-    if (priority.length === 0 && categories.length > 0) {
+    const hasStaleCategory = priority.some((category) => !categories.includes(category));
+    if ((priority.length === 0 || hasStaleCategory) && categories.length > 0) {
       setPriority(categories);
     }
-  }, [categories, priority.length]);
+  }, [categories, priority]);
 
-  const selectedVehicle: VehicleRead | undefined = vehiclesQuery.data?.find((v) => v.id === vehicleId);
+  const selectedVehicle: VehicleRead | undefined = vehicles.find((v) => v.id === vehicleId);
 
   function move(index: number, delta: -1 | 1) {
     setPriority((prev) => {
@@ -85,10 +110,9 @@ export function DispatchPlannerCard() {
           <Sparkles className="h-5 w-5" aria-hidden="true" />
         </div>
         <div className="min-w-0">
-          <h2 className="text-base font-bold text-slate-950">Truck load planner</h2>
+          <h2 className="text-base font-bold text-slate-950">Truck Load Planner</h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            Pick a vehicle + category priority. We fit bales by CBM and weight, fill the highest-priority category first,
-            then spill into the next.
+            Select vehicle length, set category priority, then plan the load by CBM and weight.
           </p>
         </div>
       </header>
@@ -96,7 +120,7 @@ export function DispatchPlannerCard() {
       <form className="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]" onSubmit={onPlan}>
         <div className="space-y-4">
           <div className="space-y-2">
-            <label className="label" htmlFor="planner-vehicle">Vehicle</label>
+            <label className="label" htmlFor="planner-vehicle">1. Vehicle length</label>
             <select
               id="planner-vehicle"
               className="field"
@@ -105,10 +129,10 @@ export function DispatchPlannerCard() {
               required
               disabled={vehiclesQuery.isLoading}
             >
-              <option value="">Select vehicle</option>
-              {(vehiclesQuery.data ?? []).map((v) => (
+              <option value="">Select vehicle length</option>
+              {vehicles.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {v.name} · {v.cbm_capacity} m³ · {Number(v.max_weight_kg).toLocaleString()} kg
+                  {vehicleLengthLabel(v.name)} · {v.cbm_capacity} m³ · {Number(v.max_weight_kg).toLocaleString()} kg
                 </option>
               ))}
             </select>
@@ -122,10 +146,12 @@ export function DispatchPlannerCard() {
           </div>
 
           <div className="space-y-2">
-            <label className="label">Category priority</label>
+            <label className="label">2. Category priority</label>
             <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
               {priority.length === 0 ? (
-                <li className="px-3 py-3 text-xs text-slate-500">Loading categories…</li>
+                <li className="px-3 py-3 text-xs text-slate-500">
+                  {productsQuery.isLoading || fabricLinesQuery.isLoading ? "Loading categories…" : "No loadable category found."}
+                </li>
               ) : (
                 priority.map((cat, i) => (
                   <li key={cat} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
@@ -147,10 +173,12 @@ export function DispatchPlannerCard() {
                 ))
               )}
             </ul>
-            <p className="text-[11px] text-slate-500">Truck fills #1 first; only spills into #2 if room remains.</p>
+            <p className="text-[11px] text-slate-500">
+              Only categories with ready pieces and bale specs are shown first. Truck fills #1 first, then spills into #2 if room remains.
+            </p>
           </div>
 
-          <button type="submit" className="primary-button w-full" disabled={busy || !vehicleId || priority.length === 0}>
+          <button type="submit" className="primary-button w-full" disabled={busy || !vehicleId || priority.length === 0 || vehicles.length === 0}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Truck className="h-4 w-4" />}
             {busy ? "Planning…" : "Plan this truck"}
           </button>
@@ -168,6 +196,10 @@ export function DispatchPlannerCard() {
       </form>
     </section>
   );
+}
+
+function vehicleLengthLabel(value: string): string {
+  return value.replace(/\bfeet\b/i, "ft");
 }
 
 function PlanOutput({ plan }: { plan: DispatchPlanResponse }) {

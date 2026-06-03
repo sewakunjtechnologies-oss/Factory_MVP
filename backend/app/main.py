@@ -12,6 +12,7 @@ from app.api.v1.routes import (
     ai_import,
     alerts,
     auth,
+    capacity,
     contractors,
     dashboard,
     dispatch,
@@ -28,6 +29,8 @@ from app.api.v1.routes import (
     product_fabric_lines,
     products,
     purchase_orders,
+    quotations,
+    quality_failures,
     reminders,
     stage_allocations,
     stage_progress,
@@ -36,8 +39,9 @@ from app.api.v1.routes import (
     voice_ws,
 )
 from app.core.config import settings
-from app.core.database import create_all_tables
+from app.core.database import AsyncSessionLocal, create_all_tables
 from app.services.exceptions import DomainError
+from app.services.operational_backfill import ensure_all_operational_data
 from app.services.scheduler import shutdown_scheduler, start_scheduler
 
 
@@ -45,6 +49,8 @@ from app.services.scheduler import shutdown_scheduler, start_scheduler
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Provision schema on first boot (idempotent — no-op once the file exists).
     await create_all_tables()
+    async with AsyncSessionLocal() as session:
+        await ensure_all_operational_data(session)
     start_scheduler()
     try:
         yield
@@ -57,6 +63,7 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,13 +101,16 @@ app.include_router(fabric_meter_receipts.router, prefix=f"{settings.api_v1_prefi
 app.include_router(ai_import.router, prefix=f"{settings.api_v1_prefix}/ai-import", tags=["ai-import"])
 app.include_router(fabric_designs.router, prefix=f"{settings.api_v1_prefix}/fabric-designs", tags=["fabric-designs"])
 app.include_router(purchase_orders.router, prefix=f"{settings.api_v1_prefix}/purchase-orders", tags=["purchase-orders"])
+app.include_router(quotations.router, prefix=f"{settings.api_v1_prefix}/quotations", tags=["quotations"])
 app.include_router(fabric_inventory.router, prefix=f"{settings.api_v1_prefix}/fabric-inventory", tags=["fabric-inventory"])
 app.include_router(fabric_receipts.router, prefix=f"{settings.api_v1_prefix}/fabric-receipts", tags=["fabric-receipts"])
 app.include_router(fabric_shortages.router, prefix=f"{settings.api_v1_prefix}/fabric-shortages", tags=["fabric-shortages"])
 app.include_router(fabric_orders.router, prefix=f"{settings.api_v1_prefix}/fabric-operations", tags=["fabric-operations"])
 app.include_router(contractors.router, prefix=f"{settings.api_v1_prefix}/contractors", tags=["contractors"])
+app.include_router(capacity.router, prefix=f"{settings.api_v1_prefix}/capacity", tags=["capacity"])
 app.include_router(stage_allocations.router, prefix=f"{settings.api_v1_prefix}/stage-allocations", tags=["stage-allocations"])
 app.include_router(stage_progress.router, prefix=f"{settings.api_v1_prefix}/stage-progress", tags=["stage-progress"])
+app.include_router(quality_failures.router, prefix=f"{settings.api_v1_prefix}/quality-failures", tags=["quality-failures"])
 app.include_router(packing.router, prefix=f"{settings.api_v1_prefix}/packing", tags=["packing"])
 app.include_router(dispatch.router, prefix=f"{settings.api_v1_prefix}/dispatch", tags=["dispatch"])
 app.include_router(vehicles.router, prefix=f"{settings.api_v1_prefix}/vehicles", tags=["vehicles"])

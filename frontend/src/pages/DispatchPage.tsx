@@ -1,4 +1,4 @@
-import { type Dispatch, type FormEvent, type SetStateAction, useMemo, useState } from "react";
+import { Fragment, type Dispatch, type FormEvent, type SetStateAction, useMemo, useState } from "react";
 import { CheckCircle2, Send, Truck } from "lucide-react";
 
 import { getApiErrorMessage } from "../api/axios";
@@ -6,7 +6,7 @@ import { DispatchPlannerCard } from "../components/DispatchPlannerCard";
 import { LoadingState } from "../components/LoadingState";
 import { useAllDispatchLoads, useCreateDispatchLoad } from "../hooks/useDispatch";
 import { usePurchaseOrders } from "../hooks/usePurchaseOrders";
-import type { DispatchCostType } from "../types/api";
+import type { DispatchCostType, DispatchLoadRead, PurchaseOrderRead } from "../types/api";
 import type { DispatchFormValues } from "../types/forms";
 import { getLoadTotals, getPOPackedQty } from "../utils/factoryMetrics";
 import { buildDispatchPayload, todayISO } from "../utils/forms";
@@ -38,25 +38,38 @@ const emptyForm: DispatchFormValues = {
   shortfall_reason: "",
 };
 
+const vehicleLengthOptions = [
+  { value: "14 feet", label: "14 ft" },
+  { value: "15 feet", label: "15 ft" },
+  { value: "17 feet", label: "17 ft" },
+  { value: "20 feet", label: "20 ft" },
+  { value: "24 feet", label: "24 ft" },
+  { value: "26 feet", label: "26 ft" },
+];
+
 export default function DispatchPage() {
   const purchaseOrdersQuery = usePurchaseOrders();
   const [values, setValues] = useState<DispatchFormValues>(emptyForm);
   const dispatchQueries = useAllDispatchLoads(purchaseOrdersQuery.data);
   const createDispatchMutation = useCreateDispatchLoad();
 
+  const purchaseOrders = useMemo(() => purchaseOrdersQuery.data ?? [], [purchaseOrdersQuery.data]);
   const allLoads = useMemo(
     () => dispatchQueries.flatMap((query) => query.data ?? []),
     [dispatchQueries],
   );
-  const selectedPO = purchaseOrdersQuery.data?.find((po) => po.id === values.purchase_order_id);
+  const selectedPO = purchaseOrders.find((po) => po.id === values.purchase_order_id);
   const packedQty = selectedPO ? getPOPackedQty(selectedPO) : 0;
   const shippedForSelected = allLoads
     .filter((load) => load.purchase_order_id === values.purchase_order_id)
     .reduce((sum, load) => sum + load.shipped_qty, 0);
   const availableToShip = Math.max(packedQty - shippedForSelected, 0);
   const totals = getLoadTotals(allLoads);
-  const poNumberById = new Map((purchaseOrdersQuery.data ?? []).map((po) => [po.id, po.po_number]));
-  const orderedQtyById = new Map((purchaseOrdersQuery.data ?? []).map((po) => [po.id, po.order_quantity_pcs]));
+  const poById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po])), [purchaseOrders]);
+  const poNumberById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po.po_number])), [purchaseOrders]);
+  const orderedQtyById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po.order_quantity_pcs])), [purchaseOrders]);
+  const purchaseOrderGroups = useMemo(() => groupPurchaseOrdersByMonth(purchaseOrders), [purchaseOrders]);
+  const loadGroups = useMemo(() => groupDispatchLoadsByMonth(allLoads, poById), [allLoads, poById]);
   const estimatedCost = getEstimatedDispatchCost(values);
   const shippedQty = toNumber(values.shipped_qty);
   const quantityInvalid = shippedQty <= 0 || shippedQty > availableToShip;
@@ -113,10 +126,14 @@ export default function DispatchPage() {
               required
             >
               <option value="">Select PO</option>
-              {(purchaseOrdersQuery.data ?? []).map((po) => (
-                <option key={po.id} value={po.id}>
-                  {po.po_number}
-                </option>
+              {purchaseOrderGroups.map((group) => (
+                <optgroup key={group.key} label={`${group.label} (${group.rows.length})`}>
+                  {group.rows.map((po) => (
+                    <option key={po.id} value={po.id}>
+                      {po.po_number} · {po.product?.product_name ?? "Product"}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>
@@ -125,8 +142,25 @@ export default function DispatchPage() {
             <TextField id="load_number" label="Load Number" values={values} setValues={setValues} required />
             <TextField id="shipped_at" label="Ship Date" values={values} setValues={setValues} type="date" required />
             <TextField id="shipped_qty" label="Shipped Qty" values={values} setValues={setValues} type="number" max={availableToShip || undefined} required />
-            <TextField id="vehicle_type" label="Vehicle Type" values={values} setValues={setValues} />
-            <TextField id="vehicle_identifier" label="Vehicle ID" values={values} setValues={setValues} />
+            <div className="space-y-2">
+              <label className="label" htmlFor="vehicle_type">
+                Vehicle Length
+              </label>
+              <select
+                id="vehicle_type"
+                className="field"
+                value={values.vehicle_type}
+                onChange={(event) => setValues((current) => ({ ...current, vehicle_type: event.target.value }))}
+              >
+                <option value="">Select length</option>
+                {vehicleLengthOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <TextField id="vehicle_identifier" label="Vehicle / Load Note" values={values} setValues={setValues} />
             <TextField id="transporter_name" label="Transporter" values={values} setValues={setValues} />
             <TextField id="destination" label="Destination" values={values} setValues={setValues} />
             <TextField id="tracking_reference" label="Tracking Ref" values={values} setValues={setValues} />
@@ -268,35 +302,44 @@ export default function DispatchPage() {
                     </td>
                   </tr>
                 ) : (
-                  allLoads.map((load) => {
-                    const ordered = orderedQtyById.get(load.purchase_order_id) ?? null;
-                    const shortfall = load.shortfall_qty ?? 0;
-                    return (
-                      <tr key={load.id}>
-                        <td className="px-4 py-3 font-semibold text-slate-950">{load.load_number}</td>
-                        <td className="px-4 py-3 text-slate-600">{poNumberById.get(load.purchase_order_id) ?? "-"}</td>
-                        <td className="px-4 py-3 text-slate-600">
-                          {formatNumber(load.shipped_qty)}
-                          {ordered != null ? <span className="text-slate-400"> / {formatNumber(ordered)}</span> : null}
+                  loadGroups.map((group) => (
+                    <Fragment key={group.key}>
+                      <tr>
+                        <td colSpan={10} className="bg-teal-50 px-4 py-2 text-xs font-extrabold uppercase tracking-wide text-teal-900">
+                          {group.label} · {formatNumber(group.rows.length)} load{group.rows.length === 1 ? "" : "s"}
                         </td>
-                        <td className="px-4 py-3 text-slate-600">{formatNumber(load.linked_repair_qty ?? 0)}</td>
-                        <td className="px-4 py-3 text-slate-600">{formatNumber(load.linked_alteration_qty ?? 0)}</td>
-                        <td className="px-4 py-3">
-                          {shortfall > 0 ? (
-                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800" title={load.shortfall_reason ?? undefined}>
-                              {formatNumber(shortfall)}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-slate-600">{costTypeLabel(load.cost_type)}</td>
-                        <td className="px-4 py-3 text-slate-600">{formatCurrency(load.dispatch_cost)}</td>
-                        <td className="px-4 py-3 text-slate-600">{formatCurrency(load.cost_per_piece)}</td>
-                        <td className="px-4 py-3 text-slate-600">{formatDate(load.shipped_at)}</td>
                       </tr>
-                    );
-                  })
+                      {group.rows.map((load) => {
+                        const ordered = orderedQtyById.get(load.purchase_order_id) ?? null;
+                        const shortfall = load.shortfall_qty ?? 0;
+                        return (
+                          <tr key={load.id}>
+                            <td className="px-4 py-3 font-semibold text-slate-950">{load.load_number}</td>
+                            <td className="px-4 py-3 text-slate-600">{poNumberById.get(load.purchase_order_id) ?? "-"}</td>
+                            <td className="px-4 py-3 text-slate-600">
+                              {formatNumber(load.shipped_qty)}
+                              {ordered != null ? <span className="text-slate-400"> / {formatNumber(ordered)}</span> : null}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">{formatNumber(load.linked_repair_qty ?? 0)}</td>
+                            <td className="px-4 py-3 text-slate-600">{formatNumber(load.linked_alteration_qty ?? 0)}</td>
+                            <td className="px-4 py-3">
+                              {shortfall > 0 ? (
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800" title={load.shortfall_reason ?? undefined}>
+                                  {formatNumber(shortfall)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">{costTypeLabel(load.cost_type)}</td>
+                            <td className="px-4 py-3 text-slate-600">{formatCurrency(load.dispatch_cost)}</td>
+                            <td className="px-4 py-3 text-slate-600">{formatCurrency(load.cost_per_piece)}</td>
+                            <td className="px-4 py-3 text-slate-600">{formatDate(load.shipped_at)}</td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ))
                 )}
               </tbody>
             </table>
@@ -306,6 +349,48 @@ export default function DispatchPage() {
       </div>
     </div>
   );
+}
+
+type MonthGroup<T> = {
+  key: string;
+  label: string;
+  sortValue: number;
+  rows: T[];
+};
+
+function groupPurchaseOrdersByMonth(rows: PurchaseOrderRead[]): MonthGroup<PurchaseOrderRead>[] {
+  return groupByMonth(rows, (po) => po.order_date);
+}
+
+function groupDispatchLoadsByMonth(
+  rows: DispatchLoadRead[],
+  purchaseOrderById: Map<string, PurchaseOrderRead>,
+): MonthGroup<DispatchLoadRead>[] {
+  return groupByMonth(rows, (load) => purchaseOrderById.get(load.purchase_order_id)?.order_date ?? load.shipped_at);
+}
+
+function groupByMonth<T>(rows: T[], getDate: (row: T) => string | null | undefined): MonthGroup<T>[] {
+  const groups = new Map<string, MonthGroup<T>>();
+  rows.forEach((row) => {
+    const parsed = parseDate(getDate(row));
+    const key = parsed ? `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}` : "unknown";
+    const label = parsed ? `${monthName(parsed)} POs` : "Other POs";
+    const sortValue = parsed ? parsed.getFullYear() * 12 + parsed.getMonth() : -1;
+    const group = groups.get(key) ?? { key, label, sortValue, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
+  });
+  return Array.from(groups.values()).sort((a, b) => b.sortValue - a.sortValue);
+}
+
+function parseDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function monthName(date: Date): string {
+  return new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(date);
 }
 
 type DispatchKey = keyof DispatchFormValues;

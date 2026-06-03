@@ -46,11 +46,12 @@ COPY backend/requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY backend/app ./app
+COPY backend/seed ./seed
 COPY --from=frontend /build/dist ./static
 
 # Persistent SQLite directory. In production this is overlaid by a Fly volume
 # (or a docker bind mount) — the directory must exist before the mount.
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data /app/generated_reports
 
 # Run as non-root.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \

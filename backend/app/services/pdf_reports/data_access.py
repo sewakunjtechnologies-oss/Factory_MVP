@@ -19,6 +19,7 @@ from app.models.mill_requirement import MillOrderRequirement
 from app.models.purchase_order import PurchaseOrder
 from app.models.reminder import Reminder
 from app.models.stage import ContractorAllocation, CuttingAnalysis, QualityFailure, StageProgressEntry, StageSummary
+from app.services.operational_backfill import ensure_all_operational_data, ensure_po_operational_data, TERMINAL_PO_STATUSES
 
 
 class FactoryAIDataAccess:
@@ -48,9 +49,24 @@ class FactoryAIDataAccess:
             )
             .order_by(PurchaseOrder.created_at.desc())
         )
-        return result.scalars().first()
+        po = result.scalars().first()
+        if po is not None:
+            await ensure_po_operational_data(self.db, po)
+            result = await self.db.execute(
+                select(PurchaseOrder)
+                .where(PurchaseOrder.id == po.id)
+                .options(
+                    selectinload(PurchaseOrder.product),
+                    selectinload(PurchaseOrder.fabric_plan),
+                    selectinload(PurchaseOrder.stage_summaries),
+                    selectinload(PurchaseOrder.dispatch_loads),
+                )
+            )
+            po = result.scalar_one_or_none()
+        return po
 
     async def list_pos(self) -> list[PurchaseOrder]:
+        await ensure_all_operational_data(self.db)
         result = await self.db.execute(
             select(PurchaseOrder)
             .options(
@@ -208,10 +224,16 @@ class FactoryAIDataAccess:
         pos = await self.list_pos()
         rows: list[dict[str, Any]] = []
         for po in pos:
+            if po.status in TERMINAL_PO_STATUSES:
+                continue
             packing = next((stage for stage in po.stage_summaries if stage.stage == StageName.packing), None)
             if packing is None:
                 continue
-            shipped_qty = sum(load.shipped_qty for load in po.dispatch_loads)
+            dispatch_stage = next((stage for stage in po.stage_summaries if stage.stage == StageName.dispatch), None)
+            shipped_qty = max(
+                sum(load.shipped_qty for load in po.dispatch_loads),
+                int(dispatch_stage.completed_qty or 0) if dispatch_stage else 0,
+            )
             ready_qty = max(packing.approved_qty - shipped_qty, 0)
             if ready_qty <= 0:
                 continue

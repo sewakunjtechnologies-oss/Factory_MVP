@@ -25,6 +25,7 @@ SUPPORTED_REPORT_TYPES = {
     "generate_pdf_qc_failures",
     "generate_pdf_packing_risk",
     "generate_pdf_pending_dispatch",
+    "generate_pdf_june_dispatch",
     "generate_pdf_dispatch_ready",
     "generate_pdf_dispatch_cost",
     "generate_pdf_alerts",

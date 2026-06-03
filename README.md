@@ -1,6 +1,10 @@
-# Factory Owner MVP Backend
+# Factory Owner MVP
 
-FastAPI backend for a PO-driven, stage-based textile factory execution system.
+FastAPI + React MVP for a PO-driven, stage-based textile factory execution system.
+
+For moving the project to a second laptop and running it as a local test server, start with:
+
+[SERVER_LAPTOP_SETUP.md](SERVER_LAPTOP_SETUP.md)
 
 ## Includes
 
@@ -9,36 +13,23 @@ FastAPI backend for a PO-driven, stage-based textile factory execution system.
 - Service-owned business rules for fabric shortage detection, partial stage movement, contractor progress, quality failure actions, packing analysis, dispatch costing, alert generation, and owner dashboard aggregation.
 - JWT authentication.
 
-## Run
+## Run Backend Locally
 
 ```bash
 cd backend
 uvicorn app.main:app --reload
 ```
 
-## Run With Docker
+## Run Full App With Docker
 
 ```bash
-cd backend
 docker compose up --build
 ```
 
-The Compose stack starts:
+The app is available at `http://127.0.0.1:8000`.
 
-- API: `http://127.0.0.1:8000`
-- PostgreSQL container: internal `postgres:5432`, host `127.0.0.1:5433`
-- Redis container: internal `redis:6379`, host `127.0.0.1:6380`
-
-The API container uses:
-
-```text
-DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/factory_mvp
-REDIS_URL=redis://redis:6379/0
-```
-
-Postgres loads `backend/schema.sql` on first volume creation. If you change the schema after the first run, remove the volume and restart:
+Seed the current June owner-demo data:
 
 ```bash
-docker compose down -v
-docker compose up --build
+docker compose exec factory-mvp python seed/seed_june_pdf_status.py
 ```

@@ -12,11 +12,16 @@ from app.models.enums import FabricPlanStatus, FabricVerificationStatus, POStatu
 from app.models.fabric import DebitNote, FabricInventory, FabricIssueToCutting, FabricPlan, FabricReceipt, SupplierReturn
 from app.models.mill_requirement import MillOrderRequirement, MillOrderRequirementStatus
 from app.models.product import Product
+from app.models.product_fabric_line import ProductFabricLine
 from app.models.purchase_order import PurchaseOrder
 from app.models.reminder import ReminderPriority, ReminderType
 from app.models.stage import StageSummary
 from app.services.exceptions import DomainError
 from app.services.reminder_service import upsert_reminder
+
+
+_TERMINAL_PO_STATUSES = {POStatus.completed, POStatus.cancelled}
+_FABRIC_STATUS_FIXABLE = {POStatus.draft, POStatus.fabric_check_pending, POStatus.fabric_ready, POStatus.shortage}
 
 
 def calculate_fabric_plan(
@@ -65,13 +70,32 @@ async def build_or_refresh_fabric_plan(db: AsyncSession, purchase_order: Purchas
     if product is None:
         raise DomainError(status_code=404, detail="Product not found")
 
+    fabric_line = await get_product_fabric_line_for_po(db, purchase_order)
+    pieces_in_stock = min(int(fabric_line.pieces_in_stock or 0), int(purchase_order.order_quantity_pcs)) if fabric_line else 0
+    pieces_to_make = max(int(purchase_order.order_quantity_pcs) - pieces_in_stock, 0)
+    per_piece_meters = (
+        fabric_line.per_piece_meters
+        if fabric_line is not None and fabric_line.per_piece_meters and fabric_line.per_piece_meters > 0
+        else product.per_piece_fabric_usage_m
+    )
     values = calculate_fabric_plan(
-        purchase_order.order_quantity_pcs,
-        product.per_piece_fabric_usage_m,
+        pieces_to_make if pieces_to_make > 0 else 1,
+        per_piece_meters,
         product.wastage_percent,
         product.roll_length_m,
     )
-    available_m = await get_verified_available_meters(db, purchase_order.id, product)
+    if pieces_to_make == 0:
+        values["required_m"] = Decimal("0.000")
+        values["wastage_m"] = Decimal("0.000")
+        values["total_required_m"] = Decimal("0.000")
+        values["rolls_required"] = 0
+    available_m = (
+        Decimal(fabric_line.stock_meters or 0).quantize(Decimal("0.001"))
+        if fabric_line is not None
+        else await get_verified_available_meters(db, purchase_order.id, product)
+    )
+    if purchase_order.status in _TERMINAL_PO_STATUSES:
+        available_m = values["total_required_m"]
     shortage_m = max(values["total_required_m"] - available_m, Decimal("0.000"))
     status = FabricPlanStatus.fabric_ready if shortage_m == 0 else FabricPlanStatus.shortage
 
@@ -91,12 +115,26 @@ async def build_or_refresh_fabric_plan(db: AsyncSession, purchase_order: Purchas
     plan.available_m = available_m
     plan.shortage_m = shortage_m.quantize(Decimal("0.001"))
     plan.status = status
-    purchase_order.status = POStatus.fabric_ready if status == FabricPlanStatus.fabric_ready else POStatus.shortage
-    if status == FabricPlanStatus.shortage and plan.shortage_m > 0:
+    if purchase_order.status in _FABRIC_STATUS_FIXABLE:
+        purchase_order.status = POStatus.fabric_ready if status == FabricPlanStatus.fabric_ready else POStatus.shortage
+    if status == FabricPlanStatus.shortage and plan.shortage_m > 0 and purchase_order.status not in _TERMINAL_PO_STATUSES:
         await upsert_mill_order_requirement(db, purchase_order.id, plan, product)
     else:
         await close_mill_order_requirement_if_any(db, purchase_order.id)
     return plan
+
+
+async def get_product_fabric_line_for_po(db: AsyncSession, purchase_order: PurchaseOrder) -> ProductFabricLine | None:
+    code = (purchase_order.design_code_snapshot or "").strip()
+    if not code:
+        return None
+    result = await db.execute(
+        select(ProductFabricLine).where(
+            ProductFabricLine.product_id == purchase_order.product_id,
+            func.lower(ProductFabricLine.fabric_code) == code.lower(),
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_verified_available_meters(db: AsyncSession, purchase_order_id: UUID, product: Product) -> Decimal:

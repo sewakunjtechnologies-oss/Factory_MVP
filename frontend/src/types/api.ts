@@ -139,6 +139,9 @@ export interface PurchaseOrderRead {
   product: ProductRead | null;
   fabric_plan: FabricPlanRead | null;
   stage_summaries: StageSummaryRead[];
+  // Stock interlink — populated server-side from product_fabric_lines.
+  pieces_in_stock_for_fabric: number;
+  pieces_to_make: number;
 }
 
 export interface DashboardPORead {

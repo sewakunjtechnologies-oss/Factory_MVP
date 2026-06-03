@@ -2,11 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getApiErrorMessage } from "../api/axios";
 import { askAssistant } from "../api/voice";
+import { canUseNativeSpeech, recognizeWithNativeSpeech, speakWithNativeSpeech, stopNativeSpeech } from "../native/factorySpeech";
 import { useAssistantStore } from "../store/assistantStore";
-
-// Listening uses the browser's Web Speech API (SpeechRecognition). The Gemini
-// brain handles reasoning + tool calls via POST /voice/ask; replies are spoken
-// back through SpeechSynthesis. No audio is sent to the backend.
 
 type SpeechRecognitionEventLike = {
   resultIndex: number;
@@ -42,9 +39,9 @@ export type VoiceStreamState =
   | "idle"
   | "connecting"
   | "ready"
-  | "speaking"   // assistant TTS is playing
-  | "listening"  // mic is open, recognizing speech
-  | "thinking"   // waiting on /voice/ask
+  | "speaking"
+  | "listening"
+  | "thinking"
   | "error";
 
 export interface ToolEvent {
@@ -64,182 +61,252 @@ interface UseVoiceStreamApi {
 
 const RECOGNITION_LANG = "en-IN";
 
+function splitForSpeech(text: string): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  const sentences = cleaned.match(/[^.!?]+[.!?]*/g) ?? [cleaned];
+  const chunks: string[] = [];
+  let current = "";
+  sentences.forEach((sentence) => {
+    const next = sentence.trim();
+    if (!next) return;
+    if ((current + " " + next).trim().length <= 220) {
+      current = (current + " " + next).trim();
+      return;
+    }
+    if (current) chunks.push(current);
+    if (next.length <= 220) {
+      current = next;
+      return;
+    }
+    for (let index = 0; index < next.length; index += 200) {
+      chunks.push(next.slice(index, index + 200));
+    }
+    current = "";
+  });
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 export function useVoiceStream(): UseVoiceStreamApi {
-  const [state, setState] = useState<VoiceStreamState>("idle");
+  const [state, setState] = useState<VoiceStreamState>("ready");
   const [error, setError] = useState<string | null>(null);
-  // REST /voice/ask returns one final answer — tool events are never streamed in.
   const [toolEvents] = useState<ToolEvent[]>([]);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const activeRef = useRef(false);
-  const pendingTranscriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
+  const finalTranscriptRef = useRef("");
+  const isListeningRef = useRef(false);
   const askInFlightRef = useRef(false);
+  const shouldSubmitOnEndRef = useRef(false);
+  const nativeRecognitionRef = useRef(false);
+  const lastSubmittedRef = useRef("");
 
-  const speak = useCallback((text: string): Promise<void> => {
-    return new Promise((resolve) => {
-      if (!text.trim() || typeof window === "undefined" || !window.speechSynthesis) {
-        resolve();
+  const speak = useCallback(async (text: string): Promise<void> => {
+    const chunks = splitForSpeech(text);
+    if (chunks.length === 0) return;
+
+    if (nativeRecognitionRef.current && await canUseNativeSpeech()) {
+      try {
+        await speakWithNativeSpeech(chunks.join(" "), RECOGNITION_LANG);
         return;
+      } catch {
+        // Fall through to browser TTS.
       }
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = RECOGNITION_LANG;
-      utter.onend = () => resolve();
-      utter.onerror = () => resolve();
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utter);
-    });
+    }
+
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+
+    for (const chunk of chunks) {
+      await new Promise<void>((resolve) => {
+        const utter = new SpeechSynthesisUtterance(chunk);
+        utter.lang = RECOGNITION_LANG;
+        utter.onend = () => resolve();
+        utter.onerror = () => resolve();
+        window.speechSynthesis.speak(utter);
+      });
+    }
   }, []);
 
-  const stopRecognition = useCallback(() => {
+  const resetRecognitionRefs = useCallback(() => {
+    interimTranscriptRef.current = "";
+    finalTranscriptRef.current = "";
+    shouldSubmitOnEndRef.current = false;
+    isListeningRef.current = false;
+  }, []);
+
+  const stopRecognition = useCallback((abort = true) => {
     const recognition = recognitionRef.current;
-    if (recognition) {
-      try { recognition.onend = null; } catch { /* ignore */ }
-      try { recognition.abort(); } catch { /* ignore */ }
+    if (!recognition) return;
+    try {
+      if (abort) recognition.abort();
+      else recognition.stop();
+    } catch {
+      // Browser recognition throws when already stopped; harmless.
     }
-    recognitionRef.current = null;
   }, []);
 
-  const cleanup = useCallback(() => {
-    activeRef.current = false;
-    stopRecognition();
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    pendingTranscriptRef.current = "";
-    askInFlightRef.current = false;
-  }, [stopRecognition]);
-
-  const startRecognition = useCallback(() => {
-    if (!activeRef.current) return;
-    const Ctor = getSpeechRecognitionCtor();
-    if (!Ctor) {
-      setError("Speech recognition is not supported in this browser. Use Chrome/Edge.");
-      setState("error");
-      activeRef.current = false;
+  const submitUtterance = useCallback(async (utterance: string) => {
+    const text = utterance.replace(/\s+/g, " ").trim();
+    if (!text || askInFlightRef.current) {
+      setState("ready");
       return;
     }
+    if (text === lastSubmittedRef.current) {
+      setState("ready");
+      return;
+    }
+
+    lastSubmittedRef.current = text;
+    askInFlightRef.current = true;
+    setError(null);
+    setState("thinking");
+    useAssistantStore.getState().appendTurn({ role: "user", text, artifacts: [] });
+
+    try {
+      const response = await askAssistant(text);
+      const answer = (response.answer ?? "").trim() || "I found the request, but there is no spoken answer available.";
+      useAssistantStore.getState().appendTurn({
+        role: "assistant",
+        text: answer,
+        artifacts: response.artifacts ?? [],
+      });
+      setState("speaking");
+      await speak(answer);
+      setState("ready");
+    } catch (err) {
+      const message = getApiErrorMessage(err);
+      setError(message);
+      useAssistantStore.getState().appendTurn({ role: "system", text: `Error: ${message}`, artifacts: [] });
+      setState("error");
+      window.setTimeout(() => setState("ready"), 1200);
+    } finally {
+      askInFlightRef.current = false;
+      window.setTimeout(() => {
+        lastSubmittedRef.current = "";
+      }, 800);
+    }
+  }, [speak]);
+
+  const startBrowserRecognition = useCallback(() => {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      setError("Speech recognition is not available in this browser. Please type your question or use Chrome.");
+      setState("error");
+      return;
+    }
+
     const recognition = new Ctor();
-    // continuous=false makes the browser fire `onend` automatically when the
-    // user pauses speaking — which is what we use to trigger the API call.
-    // With continuous=true, onend never fires until we explicitly stop, so
-    // utterances just accumulate and never get sent.
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = RECOGNITION_LANG;
     recognitionRef.current = recognition;
 
     recognition.onstart = () => {
-      if (activeRef.current && !askInFlightRef.current) setState("listening");
+      isListeningRef.current = true;
+      setState("listening");
     };
 
     recognition.onresult = (event) => {
-      let finalText = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
+      let interim = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          finalText += transcript;
+          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`.trim();
+        } else {
+          interim += transcript;
         }
       }
-      if (!finalText.trim()) return;
-      pendingTranscriptRef.current = (pendingTranscriptRef.current + " " + finalText).trim();
+      interimTranscriptRef.current = interim.trim();
     };
 
     recognition.onerror = (event) => {
-      // "no-speech" and "aborted" are routine; ignore. Surface auth / network issues.
       const code = event.error ?? "";
       if (code === "not-allowed" || code === "service-not-allowed") {
         setError("Microphone permission denied.");
         setState("error");
-        activeRef.current = false;
+      }
+      if (code === "network") {
+        setError("Speech recognition network service is unavailable. Please try again.");
+        setState("error");
       }
     };
 
-    recognition.onend = async () => {
-      const utterance = pendingTranscriptRef.current.trim();
-      pendingTranscriptRef.current = "";
-
-      if (!activeRef.current) return;
-
-      if (!utterance) {
-        // No speech captured this segment — just resume listening.
-        startRecognition();
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      isListeningRef.current = false;
+      const transcript = `${finalTranscriptRef.current} ${interimTranscriptRef.current}`.replace(/\s+/g, " ").trim();
+      const shouldSubmit = shouldSubmitOnEndRef.current;
+      resetRecognitionRefs();
+      if (!shouldSubmit) {
+        setState((current) => (current === "listening" ? "ready" : current));
         return;
       }
-
-      askInFlightRef.current = true;
-      setState("thinking");
-      useAssistantStore.getState().appendTurn({ role: "user", text: utterance, artifacts: [] });
-      try {
-        const response = await askAssistant(utterance);
-        const answer = response.answer ?? "";
-        useAssistantStore.getState().appendTurn({
-          role: "assistant",
-          text: answer,
-          artifacts: response.artifacts ?? [],
-        });
-        if (!activeRef.current) return;
-        setState("speaking");
-        await speak(answer);
-      } catch (err) {
-        if (activeRef.current) {
-          setError(getApiErrorMessage(err));
-          setState("error");
-          activeRef.current = false;
-        }
-        return;
-      } finally {
-        askInFlightRef.current = false;
-      }
-
-      if (activeRef.current) {
-        startRecognition();
-      }
+      void submitUtterance(transcript);
     };
 
     try {
       recognition.start();
     } catch (err) {
+      recognitionRef.current = null;
       setError(err instanceof Error ? err.message : "Could not start microphone.");
       setState("error");
-      activeRef.current = false;
     }
-  }, [speak]);
+  }, [resetRecognitionRefs, submitUtterance]);
 
   const startCall = useCallback(async () => {
-    if (activeRef.current) return;
-
-    if (!getSpeechRecognitionCtor()) {
-      setError("Speech recognition is not supported in this browser. Use Chrome/Edge.");
-      setState("error");
-      return;
+    if (askInFlightRef.current || isListeningRef.current || state === "speaking") return;
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
     }
-
+    void stopNativeSpeech();
+    resetRecognitionRefs();
     setError(null);
     setState("connecting");
 
-    try {
-      // Trigger the mic permission prompt early so the user sees one explicit ask.
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-    } catch {
-      setError("Microphone permission denied.");
-      setState("error");
+    if (await canUseNativeSpeech()) {
+      nativeRecognitionRef.current = true;
+      setState("listening");
+      try {
+        const utterance = await recognizeWithNativeSpeech(RECOGNITION_LANG);
+        if (utterance.trim()) {
+          await submitUtterance(utterance);
+        } else {
+          setState("ready");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not capture voice.");
+        setState("error");
+      }
       return;
     }
 
-    activeRef.current = true;
-    setState("ready");
-    startRecognition();
-  }, [startRecognition]);
+    nativeRecognitionRef.current = false;
+    startBrowserRecognition();
+  }, [resetRecognitionRefs, startBrowserRecognition, state, submitUtterance]);
 
   const endCall = useCallback(() => {
-    cleanup();
-    setState("idle");
-    setError(null);
-  }, [cleanup]);
+    if (nativeRecognitionRef.current) {
+      void stopNativeSpeech();
+      return;
+    }
+    if (!isListeningRef.current && !recognitionRef.current) return;
+    shouldSubmitOnEndRef.current = true;
+    stopRecognition(false);
+  }, [stopRecognition]);
 
-  useEffect(() => cleanup, [cleanup]);
+  useEffect(() => {
+    return () => {
+      shouldSubmitOnEndRef.current = false;
+      stopRecognition(true);
+      void stopNativeSpeech();
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [stopRecognition]);
 
   return { state, error, toolEvents, startCall, endCall };
 }

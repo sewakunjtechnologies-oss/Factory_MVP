@@ -1,1 +1,0 @@
-import{n as e}from"./axios-wPEHIxSN.js";import{S as t}from"./index-2BXaA4Xz.js";function n(n,r,i){return t({queryKey:[`packing-analysis`,n,r,i],queryFn:async()=>(await e.get(`/packing/purchase-orders/${n}/analysis`,{params:{avg_per_packer:r,actual_packers:i}})).data,enabled:!!n,staleTime:2e4})}export{n as t};

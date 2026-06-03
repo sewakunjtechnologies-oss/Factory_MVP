@@ -63,6 +63,30 @@ class PurchaseOrderRead(BaseModel):
     product: Optional[ProductRead] = None
     fabric_plan: Optional[FabricPlanRead] = None
     stage_summaries: List[StageSummaryRead] = Field(default_factory=list)
+    # Stock lookup populated by the service layer — joins this PO's
+    # (product_id, design_code_snapshot) to product_fabric_lines so the owner
+    # sees "you have N pieces of this fabric in stock; only M need to be made".
+    pieces_in_stock_for_fabric: int = 0
+    pieces_to_make: int = 0  # max(0, order_quantity_pcs - pieces_in_stock_for_fabric)
+
+
+class PurchaseOrderUpdate(BaseModel):
+    """Partial update — only the fields the owner explicitly changes are sent."""
+
+    po_number: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    product_id: Optional[UUID] = None
+    order_quantity_pcs: Optional[int] = Field(default=None, gt=0)
+    mrp: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    selling_price: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    order_date: Optional[date] = None
+    promise_delivery_date: Optional[date] = None
+    actual_delivery_date: Optional[date] = None
+    status: Optional[POStatus] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+    design_name_snapshot: Optional[str] = Field(default=None, max_length=180)
+    design_code_snapshot: Optional[str] = Field(default=None, max_length=30)
+    priority_level: Optional[str] = Field(default=None, max_length=30)
+    priority_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class PurchaseOrderPriorityUpdate(BaseModel):

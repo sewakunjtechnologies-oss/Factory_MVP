@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Download, FileText, Loader2, Mic, MicOff, Send, Sparkles, Trash2, User } from "lucide-react";
+import { Bot, Download, FileText, Loader2, Mic, Send, Sparkles, Trash2, User } from "lucide-react";
 
 import { getApiErrorMessage } from "../api/axios";
 import { askAssistant, fetchArtifactBlob, type VoiceArtifact } from "../api/voice";
@@ -56,19 +56,20 @@ export default function AssistantPage() {
   const [askError, setAskError] = useState<string | null>(null);
 
   const { state: voiceState, error: voiceError, startCall, endCall } = useVoiceStream();
-  const voiceActive = voiceState !== "idle" && voiceState !== "error";
+  const voiceBusy = voiceState === "listening" || voiceState === "thinking" || voiceState === "speaking" || voiceState === "connecting";
+  const assistantThinking = askInFlight || voiceState === "thinking";
 
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const node = transcriptRef.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [turns.length, askInFlight]);
+  }, [turns.length, assistantThinking]);
 
   const isEmpty = turns.length === 0;
 
   async function submit(prompt: string) {
     const text = prompt.trim();
-    if (!text || askInFlight) return;
+    if (!text || assistantThinking) return;
     setAskError(null);
     appendTurn({ role: "user", text, artifacts: [] });
     setInput("");
@@ -101,6 +102,22 @@ export default function AssistantPage() {
     }
   }
 
+  function handleVoicePress(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    void startCall();
+  }
+
+  function handleVoiceRelease(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released on touch cancellation.
+    }
+    endCall();
+  }
+
   return (
     <section
       className="panel grid h-[calc(100dvh-7rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-0"
@@ -118,17 +135,21 @@ export default function AssistantPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={voiceActive ? endCall : startCall}
+            onPointerDown={handleVoicePress}
+            onPointerUp={handleVoiceRelease}
+            onPointerCancel={handleVoiceRelease}
+            disabled={askInFlight || voiceState === "thinking" || voiceState === "speaking" || voiceState === "connecting"}
             className={
-              voiceActive
-                ? "inline-flex h-9 items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white transition hover:bg-red-700"
-                : "inline-flex h-9 items-center gap-2 rounded-md bg-teal-700 px-3 text-sm font-semibold text-white transition hover:bg-teal-800"
+              voiceState === "listening"
+                ? "inline-flex h-9 select-none items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                : "inline-flex h-9 select-none items-center gap-2 rounded-md bg-teal-700 px-3 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
             }
-            aria-label={voiceActive ? "Stop voice call" : "Start voice call"}
+            style={{ touchAction: "none" }}
+            aria-label="Hold to speak"
           >
-            {voiceActive ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-            <span>{voiceActive ? "Stop voice" : "Start voice"}</span>
-            {voiceActive ? (
+            {voiceState === "thinking" || voiceState === "speaking" || voiceState === "connecting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
+            <span>{voiceState === "listening" ? "Release to send" : "Hold to speak"}</span>
+            {voiceBusy ? (
               <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
                 {voiceState}
               </span>
@@ -209,7 +230,7 @@ export default function AssistantPage() {
                   </div>
                 </div>
               ))}
-              {askInFlight ? (
+              {assistantThinking ? (
                 <div className="flex justify-start">
                   <div className="flex max-w-[85%] gap-2">
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-700">
@@ -244,7 +265,7 @@ export default function AssistantPage() {
                       key={prompt}
                       type="button"
                       onClick={() => void submit(prompt)}
-                      disabled={askInFlight}
+                      disabled={assistantThinking}
                       className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-left text-xs leading-snug text-slate-700 transition hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {prompt}
@@ -271,12 +292,12 @@ export default function AssistantPage() {
             placeholder="Ask anything — e.g. 'Generate today's dispatch PDF'"
             rows={1}
             className="field max-h-32 min-h-[2.5rem] flex-1 resize-none py-2 leading-snug"
-            disabled={askInFlight}
+            disabled={assistantThinking}
           />
           <button
             type="submit"
             className="primary-button inline-flex h-10 items-center gap-2"
-            disabled={!input.trim() || askInFlight}
+            disabled={!input.trim() || assistantThinking}
           >
             <Send className="h-4 w-4" />
             Send

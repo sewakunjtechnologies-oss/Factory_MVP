@@ -45,7 +45,7 @@ async def authenticate_user(db: AsyncSession, payload: LoginRequest) -> LoginRes
 
 
 async def get_or_create_owner(db: AsyncSession) -> User:
-    result = await db.execute(select(User).where(User.role.in_([UserRole.owner, UserRole.admin])).order_by(User.created_at.asc()))
+    result = await db.execute(select(User).where(User.role == UserRole.owner).order_by(User.created_at.asc()))
     existing = result.scalars().first()
     if existing is not None:
         return existing

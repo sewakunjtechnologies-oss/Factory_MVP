@@ -27,7 +27,19 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5174",
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost",
+        "https://localhost",
+        "capacitor://localhost",
+        "ionic://localhost",
+        "null",
+        "file://",
+        "https://fingers-organizations-forecast-todd.trycloudflare.com",
+        "https://detective-divx-graduates-winning.trycloudflare.com",
+        "https://complete-yeah-early-definitions.trycloudflare.com",
+        "https://presentations-machines-athens-purpose.trycloudflare.com",
+        "https://added-edward-portable-bali.trycloudflare.com",
     ]
+    cors_origin_regex: Optional[str] = r"^https://.*\.trycloudflare\.com$"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -41,7 +53,7 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
 
 settings = Settings()
