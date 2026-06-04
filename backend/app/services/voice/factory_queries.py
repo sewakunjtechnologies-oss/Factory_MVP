@@ -104,6 +104,8 @@ async def answer_factory_question(db: AsyncSession, message: str) -> DirectAssis
         return DirectAssistantAnswer(_list_ordered_not_received(pos))
     if "fabric ready" in normalized or "has fabric ready" in normalized or "fabric is ready" in normalized:
         return DirectAssistantAnswer(_list_fabric_ready(pos))
+    if "due this week" in normalized or "due in this week" in normalized or "due today" in normalized:
+        return DirectAssistantAnswer(_list_due_this_week(pos))
     if "king size" in normalized or "king-size" in normalized or "king bed" in normalized:
         return DirectAssistantAnswer(_answer_king_fabric_requirement(pos))
 
@@ -734,6 +736,19 @@ def _list_fabric_ready(pos: list[PurchaseOrder]) -> str:
         and po.status in {POStatus.fabric_ready, POStatus.cutting, POStatus.stitching, POStatus.packing, POStatus.dispatch, POStatus.partially_dispatched}
     ]
     return _format_po_list("POs with fabric ready", rows)
+
+
+def _list_due_this_week(pos: list[PurchaseOrder]) -> str:
+    today = date.today()
+    end = today + timedelta(days=7)
+    rows = [
+        po for po in pos
+        if po.status not in TERMINAL_PO_STATUSES
+        and today <= po.promise_delivery_date <= end
+    ]
+    if not rows:
+        return f"No active POs are due between {today.isoformat()} and {end.isoformat()}."
+    return _format_po_list(f"POs due between {today.isoformat()} and {end.isoformat()}", rows)
 
 
 def _answer_king_fabric_requirement(pos: list[PurchaseOrder]) -> str:
