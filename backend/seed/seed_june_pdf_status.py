@@ -680,9 +680,25 @@ def _fallback_piece_cbm(weight: str) -> Decimal:
 
 
 def _fabric_meter_factor(row: JuneRow) -> Decimal:
-    # The June status PDF provides PO quantity, weight and CBM, but no fabric
-    # meter-per-piece. Use a 1.000 pieces-equivalent meter so shortage/order
-    # visibility remains truthful to the sheet without inventing fabric math.
+    # Updated from owner-provided WhatsApp photo dated 2026-06-04. The third
+    # column in that photo is the meter-per-piece fabric consumption.
+    category = row.category.upper()
+    if category.startswith("109-"):
+        return Decimal("1.420")
+    if "MISTY" in category or "TEAL" in category:
+        return Decimal("1.750")
+    if "CHARCOAL" in category:
+        return Decimal("1.430")
+    if "SAGE-GRID" in category or "EARTHY-ABSTRACT" in category or "MODERN-GEO" in category:
+        return Decimal("2.850")
+    if "JAIPURI" in category:
+        return Decimal("2.950")
+    if "GOLD-STEM" in category or "GOLD-STEAM" in category or "MODERN-STONE" in category:
+        return Decimal("2.850")
+    if "FITTED" in category:
+        return Decimal("3.100")
+    if "PREMIUM" in category or "WHITEBEAUTY" in category or "WHITE-BEAUTY" in category:
+        return Decimal("3.350")
     return Decimal("1.000")
 
 
