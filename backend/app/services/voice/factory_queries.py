@@ -177,6 +177,10 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
     if starts_like_question and not explicit_write and not has_meters:
         return None
 
+    data_update = _parse_voice_data_update(pos, raw_text, normalized, explicit_write)
+    if data_update is not None:
+        return data_update
+
     is_fabric_order = "fabric" in normalized and any(word in normalized for word in ("ordered", "orderd", "order placed", "order ")) and "received" not in normalized and "recieved" not in normalized
     is_fabric_received = "fabric" in normalized and ("received" in normalized or "recieved" in normalized)
     stage = _stage_from_text(normalized)
@@ -224,6 +228,8 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
 
 
 async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -> str:
+    if pending.action_type == "bulk_data_update":
+        return await _execute_bulk_data_update(db, pending)
     po = await _load_po_by_number(db, pending.po_number)
     if po is None:
         return f"I could not find {pending.po_number}, so nothing was updated."
@@ -234,6 +240,267 @@ async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -
     if pending.action_type == "stage_update":
         return await _execute_stage_update(db, po, pending)
     return "I could not understand the pending update, so nothing was changed."
+
+
+_PO_UPDATE_FIELDS: dict[str, dict[str, Any]] = {
+    "selling_price": {
+        "label": "selling price",
+        "scope": "purchase_order",
+        "type": "decimal",
+        "synonyms": ("selling price", "selling rate", "sale price", "sales price", "price", "rate"),
+    },
+    "mrp": {
+        "label": "MRP",
+        "scope": "purchase_order",
+        "type": "decimal",
+        "synonyms": ("mrp", "mrp price", "package price"),
+    },
+    "order_quantity_pcs": {
+        "label": "order quantity",
+        "scope": "purchase_order",
+        "type": "int",
+        "synonyms": ("quantity", "qty", "pieces", "order quantity"),
+    },
+}
+
+_PRODUCT_UPDATE_FIELDS: dict[str, dict[str, Any]] = {
+    "gsm": {
+        "label": "GSM",
+        "scope": "product",
+        "type": "decimal",
+        "synonyms": ("gsm",),
+    },
+    "width": {
+        "label": "fabric width",
+        "scope": "product",
+        "type": "decimal",
+        "synonyms": ("width", "fabric width"),
+    },
+    "per_piece_fabric_usage_m": {
+        "label": "meter per piece",
+        "scope": "product",
+        "type": "decimal",
+        "synonyms": ("meter per piece", "metre per piece", "meters per piece", "meter usage", "fabric usage"),
+    },
+    "wastage_percent": {
+        "label": "wastage percent",
+        "scope": "product",
+        "type": "decimal",
+        "synonyms": ("wastage", "wastage percent", "wastage percentage"),
+    },
+    "size": {
+        "label": "size",
+        "scope": "product",
+        "type": "text",
+        "synonyms": ("size", "product size"),
+    },
+    "fabric_type": {
+        "label": "fabric type",
+        "scope": "product",
+        "type": "text",
+        "synonyms": ("fabric type", "fabric"),
+    },
+}
+
+
+def _parse_voice_data_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+    explicit_write: bool,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not explicit_write:
+        return None
+    field_name, spec = _extract_update_field(normalized)
+    if field_name is None or spec is None:
+        return None
+    value = _extract_update_value(raw_text, normalized, spec)
+    if value is None:
+        return DirectAssistantAnswer(f"What value should I set for {spec['label']}?")
+    matches = _match_update_targets(pos, raw_text, normalized, str(value))
+    if not matches:
+        return DirectAssistantAnswer(
+            f"I could not find matching POs for this update. Please mention a PO number or a category/rate like 69."
+        )
+    preview_pos = ", ".join(po.po_number for po in matches[:6])
+    if len(matches) > 6:
+        preview_pos += f", and {len(matches) - 6} more"
+    return PendingVoiceWrite(
+        action_type="bulk_data_update",
+        po_number=f"{len(matches)} POs",
+        preview=f"set {spec['label']} to {_display_update_value(value, spec)} for {len(matches)} PO(s): {preview_pos}",
+        payload={
+            "field": field_name,
+            "label": spec["label"],
+            "scope": spec["scope"],
+            "type": spec["type"],
+            "value": str(value),
+            "po_numbers": [po.po_number for po in matches],
+        },
+    )
+
+
+def _extract_update_field(normalized: str) -> tuple[str | None, dict[str, Any] | None]:
+    for field, spec in {**_PO_UPDATE_FIELDS, **_PRODUCT_UPDATE_FIELDS}.items():
+        if any(synonym in normalized for synonym in spec["synonyms"]):
+            return field, spec
+    return None, None
+
+
+def _extract_update_value(raw_text: str, normalized: str, spec: dict[str, Any]) -> Decimal | int | str | None:
+    value_type = str(spec["type"])
+    label_pattern = "|".join(re.escape(synonym) for synonym in spec["synonyms"])
+    if value_type in {"decimal", "int"}:
+        patterns = [
+            r"(?:to|with|as|at)\s*(?:rs\.?|rupees?|₹)?\s*(\d[\d,]*(?:\.\d+)?)",
+            r"(?:rs\.?|rupees?|₹)\s*(\d[\d,]*(?:\.\d+)?)",
+            rf"(?:{label_pattern})\s*(?:is|to|with|as|at|rs\.?|rupees?|₹)?\s*(\d[\d,]*(?:\.\d+)?)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            number = match.group(1).replace(",", "")
+            if value_type == "int":
+                return int(Decimal(number))
+            return Decimal(number)
+        return None
+    patterns = [
+        r"(?:to|with|as)\s+(.+)$",
+        rf"(?:{label_pattern})\s+(?:is|to|with|as)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw_text, re.IGNORECASE)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1).strip()).strip(" .")
+    return None
+
+
+def _match_update_targets(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+    value_text: str,
+) -> list[PurchaseOrder]:
+    exact_po = _extract_po(pos, raw_text)
+    target_numbers = _target_numbers_for_update(normalized, value_text)
+    matches: list[PurchaseOrder] = []
+    if target_numbers:
+        for po in pos:
+            product_name = (po.product.product_name if po.product else "").lower()
+            design_name = (po.design_name_snapshot or "").lower()
+            design_code = (po.design_code_snapshot or "").lower()
+            for number in target_numbers:
+                if (
+                    product_name.startswith(f"{number}-")
+                    or product_name.startswith(f"{number} ")
+                    or f" {number}-" in product_name
+                    or design_name.startswith(f"{number}-")
+                    or design_code.startswith(f"{number}-")
+                    or (po.selling_price is not None and Decimal(po.selling_price) == Decimal(number))
+                    or (po.mrp is not None and Decimal(po.mrp) == Decimal(number))
+                ):
+                    matches.append(po)
+                    break
+    if not matches and exact_po is not None:
+        matches = [exact_po]
+    # Stable order and de-duplication.
+    seen = set()
+    unique = []
+    for po in sorted(matches, key=lambda item: item.po_number):
+        if po.po_number in seen:
+            continue
+        seen.add(po.po_number)
+        unique.append(po)
+    return unique
+
+
+def _target_numbers_for_update(normalized: str, value_text: str) -> list[str]:
+    all_numbers = [token.replace(",", "") for token in re.findall(r"\d+(?:\.\d+)?", normalized)]
+    value = str(value_text).replace(",", "").rstrip("0").rstrip(".")
+    targets = []
+    for token in all_numbers:
+        comparable = token.rstrip("0").rstrip(".")
+        if comparable == value:
+            continue
+        if token not in targets:
+            targets.append(token)
+    return targets
+
+
+async def _execute_bulk_data_update(db: AsyncSession, pending: PendingVoiceWrite) -> str:
+    field = str(pending.payload["field"])
+    scope = str(pending.payload["scope"])
+    value_type = str(pending.payload["type"])
+    value = _coerce_update_value(str(pending.payload["value"]), value_type)
+    po_numbers = list(pending.payload.get("po_numbers") or [])
+    if not po_numbers:
+        return "No PO targets were saved for this update, so nothing was changed."
+
+    result = await db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.po_number.in_(po_numbers))
+        .options(selectinload(PurchaseOrder.product))
+        .order_by(PurchaseOrder.po_number.asc())
+    )
+    pos = list(result.scalars().all())
+    if not pos:
+        return "I could not find the selected POs anymore, so nothing was updated."
+
+    updated = 0
+    updated_products: set[str] = set()
+    for po in pos:
+        target = po if scope == "purchase_order" else po.product
+        entity_type = "purchase_order" if scope == "purchase_order" else "product"
+        if target is None or not hasattr(target, field):
+            continue
+        old_value = getattr(target, field)
+        setattr(target, field, value)
+        updated += 1
+        if scope == "product":
+            updated_products.add(str(target.id))
+        await log_audit_event(
+            db,
+            action_type="voice_bulk_data_update",
+            purchase_order_id=po.id,
+            entity_type=entity_type,
+            entity_id=str(target.id),
+            old_value_json={field: _json_safe_value(old_value), "po_number": po.po_number},
+            new_value_json={field: _json_safe_value(value), "po_number": po.po_number},
+            remarks="Confirmed voice command.",
+        )
+    await db.commit()
+    value_display = _display_update_value(value, {"type": value_type, "label": pending.payload["label"]})
+    if scope == "product":
+        return (
+            f"Updated {updated} PO rows across {len(updated_products)} product record(s). "
+            f"{pending.payload['label']} is now {value_display} for the selected POs."
+        )
+    return f"Updated {updated} PO(s). {pending.payload['label']} is now {value_display}."
+
+
+def _coerce_update_value(value: str, value_type: str) -> Decimal | int | str:
+    if value_type == "decimal":
+        return Decimal(value)
+    if value_type == "int":
+        return int(Decimal(value))
+    return value
+
+
+def _display_update_value(value: Decimal | int | str, spec: dict[str, Any]) -> str:
+    if spec["type"] == "decimal":
+        label = str(spec.get("label", "value")).lower()
+        prefix = "Rs " if "price" in label or "mrp" in label or "rate" in label else ""
+        return f"{prefix}{Decimal(value):f}"
+    return str(value)
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 async def _load_po_by_number(db: AsyncSession, po_number: str) -> PurchaseOrder | None:
