@@ -53,7 +53,7 @@ async def list_output(
 @router.post("/plan", response_model=PackingPlanResponse)
 async def plan(
     payload: PackingPlanRequest,
-    _: Annotated[User, Depends(require_owner_or_manager)],
+    _: Annotated[User, Depends(require_owner)],
 ) -> PackingPlanResponse:
     """Pure calculator: total_pieces + packers + target_days OR per_packer_per_day."""
     return plan_packing(payload)

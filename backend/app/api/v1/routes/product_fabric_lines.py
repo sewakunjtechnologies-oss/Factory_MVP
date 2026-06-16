@@ -15,12 +15,14 @@ from app.core.database import get_db
 from app.core.security import require_owner, require_owner_or_manager
 from app.models.product import Product
 from app.models.product_fabric_line import ProductFabricLine
+from app.models.purchase_order import PurchaseOrder
 from app.models.user import User
 from app.schemas.product_fabric_line import (
     ProductFabricLineCreate,
     ProductFabricLineRead,
     ProductFabricLineUpdate,
 )
+from app.services.fabric_planning import build_or_refresh_fabric_plan
 
 router = APIRouter()
 
@@ -68,6 +70,7 @@ async def update_line(
     updates = payload.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(line, field, value)
+    await _refresh_matching_po_plans(db, line)
     await db.commit()
     await db.refresh(line)
     return line
@@ -82,9 +85,28 @@ async def delete_line(
     line = await db.get(ProductFabricLine, line_id)
     if line is None:
         raise HTTPException(status_code=404, detail="Fabric line not found")
+    product_id = line.product_id
+    fabric_code = line.fabric_code
     await db.delete(line)
+    await db.flush()
+    await _refresh_matching_po_plans_by_key(db, product_id, fabric_code)
     await db.commit()
     return Response(status_code=204)
+
+
+async def _refresh_matching_po_plans(db: AsyncSession, line: ProductFabricLine) -> None:
+    await _refresh_matching_po_plans_by_key(db, line.product_id, line.fabric_code)
+
+
+async def _refresh_matching_po_plans_by_key(db: AsyncSession, product_id: UUID, fabric_code: str) -> None:
+    result = await db.execute(
+        select(PurchaseOrder).where(
+            PurchaseOrder.product_id == product_id,
+            PurchaseOrder.design_code_snapshot == fabric_code,
+        )
+    )
+    for po in result.scalars().all():
+        await build_or_refresh_fabric_plan(db, po)
 
 
 # ---------------------------------------------------------------------------

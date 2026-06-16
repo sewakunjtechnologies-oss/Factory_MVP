@@ -10,7 +10,7 @@ from app.models.dispatch import DispatchLoad
 from app.models.enums import DispatchCostType, POStatus, StageName, StageStatus
 from app.models.purchase_order import PurchaseOrder
 from app.models.stage import StageSummary
-from app.schemas.dispatch import DispatchLoadCreate, DispatchSummaryRead
+from app.schemas.dispatch import DispatchLoadCreate, DispatchLoadUpdate, DispatchSummaryRead
 from app.services.audit_service import log_audit_event
 from app.services.exceptions import DomainError
 from app.services.notification_service import create_notification
@@ -87,24 +87,8 @@ async def create_dispatch_load(db: AsyncSession, payload: DispatchLoadCreate) ->
     )
     db.add(load)
 
-    dispatch_stage.input_qty = max(dispatch_stage.input_qty, packing_stage.approved_qty)
-    if dispatch_stage.input_qty > packing_stage.approved_qty:
-        raise DomainError(status_code=400, detail="dispatch input cannot exceed approved packing quantity")
-    dispatch_stage.completed_qty = total_shipped
-    dispatch_stage.approved_qty = total_shipped
-    dispatch_stage.pending_qty = max(dispatch_stage.input_qty - dispatch_stage.completed_qty, 0)
-    dispatch_stage.status = StageStatus.completed if dispatch_stage.completed_qty >= po.order_quantity_pcs else StageStatus.in_progress
-
-    if total_shipped >= po.order_quantity_pcs:
-        po.status = POStatus.completed
-        po.actual_delivery_date = payload.shipped_at
-    else:
-        if payload.linked_repair_qty > 0 or payload.linked_alteration_qty > 0:
-            po.status = POStatus.dispatched_with_exception
-        else:
-            po.status = POStatus.partially_dispatched
-
     await db.flush()
+    await _sync_po_dispatch_state(db, po)
     await log_audit_event(
         db,
         action_type="dispatch_record_created",
@@ -135,6 +119,70 @@ async def create_dispatch_load(db: AsyncSession, payload: DispatchLoadCreate) ->
     await db.commit()
     await db.refresh(load)
     return load
+
+
+async def update_dispatch_load(
+    db: AsyncSession,
+    dispatch_load_id: UUID,
+    payload: DispatchLoadUpdate,
+    *,
+    updated_by: UUID | None = None,
+    updated_role: str | None = None,
+) -> DispatchLoad:
+    load = await db.get(DispatchLoad, dispatch_load_id)
+    if load is None:
+        raise DomainError(status_code=404, detail="Dispatch load not found")
+    old_values = _dispatch_load_snapshot(load)
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(load, field, value)
+
+    po = await _validate_and_reprice_load(db, load)
+    await _sync_po_dispatch_state(db, po)
+    await log_audit_event(
+        db,
+        action_type="dispatch_record_updated",
+        entity_type="dispatch_load",
+        entity_id=str(load.id),
+        purchase_order_id=load.purchase_order_id,
+        performed_by=updated_by,
+        role=updated_role or "dispatcher",
+        old_value_json=old_values,
+        new_value_json=_dispatch_load_snapshot(load),
+    )
+    await db.commit()
+    await db.refresh(load)
+    return load
+
+
+async def delete_dispatch_load(
+    db: AsyncSession,
+    dispatch_load_id: UUID,
+    *,
+    deleted_by: UUID | None = None,
+    deleted_role: str | None = None,
+) -> None:
+    load = await db.get(DispatchLoad, dispatch_load_id)
+    if load is None:
+        raise DomainError(status_code=404, detail="Dispatch load not found")
+    po_id = load.purchase_order_id
+    snapshot = _dispatch_load_snapshot(load)
+    await log_audit_event(
+        db,
+        action_type="dispatch_record_deleted",
+        entity_type="dispatch_load",
+        entity_id=str(load.id),
+        purchase_order_id=po_id,
+        performed_by=deleted_by,
+        role=deleted_role or "dispatcher",
+        old_value_json=snapshot,
+    )
+    await db.delete(load)
+    await db.flush()
+    po = await db.get(PurchaseOrder, po_id)
+    if po is not None:
+        await _sync_po_dispatch_state(db, po)
+    await db.commit()
 
 
 def calculate_dispatch_cost(payload: DispatchLoadCreate) -> Decimal:
@@ -186,6 +234,90 @@ async def get_dispatch_summary(db: AsyncSession, purchase_order_id: UUID) -> Dis
         average_cost_per_piece=average,
         loads=loads,
     )
+
+
+async def _validate_and_reprice_load(db: AsyncSession, load: DispatchLoad) -> PurchaseOrder:
+    po = await db.get(PurchaseOrder, load.purchase_order_id)
+    if po is None:
+        raise DomainError(status_code=404, detail="Purchase order not found")
+    packing_stage = await _get_stage(db, po.id, StageName.packing)
+    shipped_other = await get_shipped_quantity(db, po.id, exclude_load_id=load.id)
+    available_to_this_load = packing_stage.approved_qty - shipped_other
+    if load.document_status == "blocked" and load.shipped_qty > 0:
+        raise DomainError(status_code=400, detail="Dispatch is blocked by missing documentation")
+    if load.shipped_qty <= 0:
+        raise DomainError(status_code=400, detail="shipped_qty must be greater than zero")
+    if load.shipped_qty > available_to_this_load:
+        raise DomainError(status_code=400, detail="shipped_qty cannot exceed packed and approved quantity")
+    loaded_pieces = load.actual_loaded_pieces or load.shipped_qty
+    if loaded_pieces <= 0:
+        raise DomainError(status_code=400, detail="actual_loaded_pieces must be greater than zero")
+    if loaded_pieces > available_to_this_load:
+        raise DomainError(status_code=400, detail="actual_loaded_pieces cannot exceed dispatch-ready quantity")
+    dispatch_cost = calculate_dispatch_cost(load)  # type: ignore[arg-type]
+    cost_per_piece = (dispatch_cost / Decimal(loaded_pieces)).quantize(Decimal("0.0001"))
+    if load.cost_type == DispatchCostType.vehicle_capacity:
+        cost_per_piece = dispatch_cost
+    actual_cost_percent = None
+    if load.invoice_value and load.invoice_value > 0:
+        actual_cost_percent = (dispatch_cost / load.invoice_value * Decimal("100")).quantize(Decimal("0.001"))
+    load.dispatch_cost = dispatch_cost
+    load.cost_per_piece = cost_per_piece
+    load.expected_cost_percent = load.dispatch_percent
+    load.actual_cost_percent = actual_cost_percent
+    return po
+
+
+async def _sync_po_dispatch_state(db: AsyncSession, po: PurchaseOrder) -> None:
+    packing_stage = await _get_stage(db, po.id, StageName.packing)
+    dispatch_stage = await _get_stage(db, po.id, StageName.dispatch)
+    loads = await list_dispatch_loads(db, po.id)
+    chronological_loads = sorted(loads, key=lambda load: (load.shipped_at, load.created_at))
+    total_shipped = 0
+    has_exception = False
+    latest_ship_date = None
+    for load in chronological_loads:
+        total_shipped += load.shipped_qty
+        has_exception = has_exception or load.linked_repair_qty > 0 or load.linked_alteration_qty > 0 or bool(load.shortfall_reason)
+        latest_ship_date = load.shipped_at
+        load.shortfall_qty = max(po.order_quantity_pcs - total_shipped, 0)
+
+    dispatch_stage.input_qty = max(dispatch_stage.input_qty, packing_stage.approved_qty)
+    if dispatch_stage.input_qty > packing_stage.approved_qty:
+        dispatch_stage.input_qty = packing_stage.approved_qty
+    dispatch_stage.completed_qty = total_shipped
+    dispatch_stage.approved_qty = total_shipped
+    dispatch_stage.pending_qty = max(dispatch_stage.input_qty - dispatch_stage.completed_qty, 0)
+    if total_shipped >= po.order_quantity_pcs:
+        dispatch_stage.status = StageStatus.completed
+        po.status = POStatus.completed
+        po.actual_delivery_date = latest_ship_date
+    elif total_shipped > 0:
+        dispatch_stage.status = StageStatus.in_progress
+        po.status = POStatus.dispatched_with_exception if has_exception else POStatus.partially_dispatched
+        po.actual_delivery_date = None
+    else:
+        dispatch_stage.status = StageStatus.not_started if dispatch_stage.input_qty == 0 else StageStatus.in_progress
+        if po.status in {POStatus.partially_dispatched, POStatus.dispatched_with_exception, POStatus.completed}:
+            po.status = POStatus.packing if packing_stage.approved_qty > 0 else POStatus.dispatch
+        po.actual_delivery_date = None
+
+
+def _dispatch_load_snapshot(load: DispatchLoad) -> dict:
+    return {
+        "load_number": load.load_number,
+        "shipped_qty": load.shipped_qty,
+        "vehicle_type": load.vehicle_type,
+        "vehicle_identifier": load.vehicle_identifier,
+        "cost_type": load.cost_type.value if load.cost_type else None,
+        "dispatch_cost": float(load.dispatch_cost or 0),
+        "cost_per_piece": float(load.cost_per_piece or 0),
+        "shortfall_qty": load.shortfall_qty,
+        "linked_repair_qty": load.linked_repair_qty,
+        "linked_alteration_qty": load.linked_alteration_qty,
+        "shortfall_reason": load.shortfall_reason,
+        "shipped_at": str(load.shipped_at),
+    }
 
 
 async def update_dispatch_documents(
@@ -241,12 +373,13 @@ async def update_dispatch_documents(
     return load
 
 
-async def get_shipped_quantity(db: AsyncSession, purchase_order_id: UUID) -> int:
-    result = await db.execute(
-        select(func.coalesce(func.sum(DispatchLoad.shipped_qty), 0)).where(
-            DispatchLoad.purchase_order_id == purchase_order_id
-        )
+async def get_shipped_quantity(db: AsyncSession, purchase_order_id: UUID, exclude_load_id: UUID | None = None) -> int:
+    stmt = select(func.coalesce(func.sum(DispatchLoad.shipped_qty), 0)).where(
+        DispatchLoad.purchase_order_id == purchase_order_id
     )
+    if exclude_load_id is not None:
+        stmt = stmt.where(DispatchLoad.id != exclude_load_id)
+    result = await db.execute(stmt)
     return int(result.scalar_one())
 
 

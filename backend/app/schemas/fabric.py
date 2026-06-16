@@ -25,6 +25,15 @@ class FabricInventoryCreate(BaseModel):
     approximate_rolls: Optional[int] = Field(default=None, ge=0)
 
 
+class FabricInventoryUpdate(BaseModel):
+    fabric_type: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    color: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    gsm: Optional[Decimal] = Field(default=None, gt=0, max_digits=10, decimal_places=2)
+    width: Optional[Decimal] = Field(default=None, gt=0, max_digits=10, decimal_places=2)
+    available_length_m: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    approximate_rolls: Optional[int] = Field(default=None, ge=0)
+
+
 class FabricReceiptCreate(FabricInventoryCreate):
     """Payload for recording approved or failed fabric receipt."""
 

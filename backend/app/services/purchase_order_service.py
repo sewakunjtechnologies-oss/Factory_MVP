@@ -277,6 +277,14 @@ async def update_purchase_order(
         if hasattr(po, key):
             setattr(po, key, value)
 
+    if {
+        "product_id",
+        "order_quantity_pcs",
+        "design_code_snapshot",
+        "status",
+    }.intersection(fields):
+        await build_or_refresh_fabric_plan(db, po)
+
     await log_audit_event(
         db,
         action_type="po_updated",

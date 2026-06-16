@@ -66,6 +66,42 @@ class DispatchLoadCreate(BaseModel):
         return self
 
 
+class DispatchLoadUpdate(BaseModel):
+    load_number: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    shipped_qty: Optional[int] = Field(default=None, gt=0)
+    vehicle_type: Optional[str] = Field(default=None, max_length=100)
+    vehicle_identifier: Optional[str] = Field(default=None, max_length=100)
+    expected_piece_capacity: Optional[int] = Field(default=None, gt=0)
+    actual_loaded_pieces: Optional[int] = Field(default=None, gt=0)
+    cbm_capacity: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=3)
+    cbm_used: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=3)
+    cost_type: Optional[DispatchCostType] = None
+    invoice_value: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    dispatch_percent: Optional[Decimal] = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    cbm_value: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=3)
+    cbm_rate: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    manual_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    vehicle_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    shipped_at: Optional[date] = None
+    transporter_name: Optional[str] = Field(default=None, max_length=150)
+    destination: Optional[str] = Field(default=None, max_length=255)
+    tracking_reference: Optional[str] = Field(default=None, max_length=150)
+    document_status: Optional[str] = Field(default=None, max_length=50)
+    invoice_uploaded: Optional[bool] = None
+    packing_list_uploaded: Optional[bool] = None
+    eway_bill_uploaded: Optional[bool] = None
+    transporter_confirmation: Optional[bool] = None
+    buyer_dispatch_approval: Optional[bool] = None
+    shortfall_reason: Optional[str] = Field(default=None, max_length=255)
+    linked_repair_qty: Optional[int] = Field(default=None, ge=0)
+    linked_alteration_qty: Optional[int] = Field(default=None, ge=0)
+    assigned_to: Optional[UUID] = None
+    responsible_role: Optional[str] = Field(default=None, max_length=80)
+    completed_by: Optional[UUID] = None
+    completed_at: Optional[datetime] = None
+    remarks: Optional[str] = Field(default=None, max_length=500)
+
+
 class DispatchLoadRead(DispatchLoadCreate):
     model_config = ConfigDict(from_attributes=True)
 

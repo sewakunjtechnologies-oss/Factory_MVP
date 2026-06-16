@@ -21,6 +21,7 @@ from app.models.fabric import (
 from app.models.mill_requirement import MillOrderRequirement
 from app.models.fabric_meter_receipt import FabricMeterReceipt
 from app.models.notification import Notification
+from app.models.packing_material import PackingMaterialInventory
 from app.models.pieces_receipt import PiecesReceipt
 from app.models.po_draft import PODraft
 from app.models.product import Product
@@ -61,6 +62,7 @@ __all__ = [
     "MillOrderRequirement",
     "FabricMeterReceipt",
     "Notification",
+    "PackingMaterialInventory",
     "PackingOutput",
     "PiecesReceipt",
     "PODraft",

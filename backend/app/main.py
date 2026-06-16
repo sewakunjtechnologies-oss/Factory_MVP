@@ -22,6 +22,7 @@ from app.api.v1.routes import (
     fabric_receipts,
     fabric_shortages,
     packing,
+    packing_materials,
     notifications,
     fabric_meter_receipts,
     pdf_reports,
@@ -42,6 +43,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal, create_all_tables
 from app.services.exceptions import DomainError
 from app.services.operational_backfill import ensure_all_operational_data
+from app.services.packing_material_service import ensure_packing_material_schema
 from app.services.scheduler import shutdown_scheduler, start_scheduler
 
 
@@ -50,6 +52,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Provision schema on first boot (idempotent — no-op once the file exists).
     await create_all_tables()
     async with AsyncSessionLocal() as session:
+        await ensure_packing_material_schema(session)
         await ensure_all_operational_data(session)
     start_scheduler()
     try:
@@ -112,6 +115,7 @@ app.include_router(stage_allocations.router, prefix=f"{settings.api_v1_prefix}/s
 app.include_router(stage_progress.router, prefix=f"{settings.api_v1_prefix}/stage-progress", tags=["stage-progress"])
 app.include_router(quality_failures.router, prefix=f"{settings.api_v1_prefix}/quality-failures", tags=["quality-failures"])
 app.include_router(packing.router, prefix=f"{settings.api_v1_prefix}/packing", tags=["packing"])
+app.include_router(packing_materials.router, prefix=f"{settings.api_v1_prefix}/packing-materials", tags=["packing-materials"])
 app.include_router(dispatch.router, prefix=f"{settings.api_v1_prefix}/dispatch", tags=["dispatch"])
 app.include_router(vehicles.router, prefix=f"{settings.api_v1_prefix}/vehicles", tags=["vehicles"])
 app.include_router(notifications.router, prefix=f"{settings.api_v1_prefix}/notifications", tags=["notifications"])

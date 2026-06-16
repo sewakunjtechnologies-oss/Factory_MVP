@@ -7,21 +7,26 @@ from decimal import Decimal
 from typing import Any, Iterable
 from urllib.parse import quote
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.enums import POStatus, StageName
+from app.models.enums import DispatchCostType, POStatus, StageName
 from app.models.fabric import FabricMillOrder, FabricPlan, FabricReceipt
 from app.models.enums import FabricMillOrderStatus, FabricPlanStatus, FabricVerificationStatus, ReceiptStatus, StageStatus
 from app.models.mill_requirement import MillOrderRequirement, MillOrderRequirementStatus
+from app.models.packing_material import PackingMaterialInventory
 from app.models.product import Product
 from app.models.product_fabric_line import ProductFabricLine
 from app.models.purchase_order import PurchaseOrder
 from app.models.reminder import Reminder, ReminderPriority, ReminderStatus, ReminderType
 from app.models.stage import ContractorAllocation, StageSummary
 from app.services.audit_service import log_audit_event
+from app.schemas.dispatch import DispatchLoadCreate
+from app.services.dispatch_engine import create_dispatch_load, get_dispatch_summary
+from app.services.exceptions import DomainError
 from app.services.operational_backfill import TERMINAL_PO_STATUSES, ensure_all_operational_data, ensure_po_operational_data
+from app.services.packing_material_service import recalculate_shortage
 from app.services.pdf_reports.report_registry import REPORT_REGISTRY
 from app.services.pdf_reports.report_schemas import ReportGenerateRequest
 from app.services.pdf_reports.report_service import ReportService
@@ -87,6 +92,8 @@ async def answer_factory_question(db: AsyncSession, message: str) -> DirectAssis
         if po is not None:
             return DirectAssistantAnswer(_po_mill_requirement(po))
         return DirectAssistantAnswer(_list_mill_requirements(pos))
+    if _mentions_packing_material(normalized):
+        return DirectAssistantAnswer(await _list_packing_materials_for_owner(db, pos, text, normalized))
 
     rate_answer = _answer_price_or_rate_query(pos, normalized)
     if rate_answer is not None:
@@ -177,14 +184,39 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
     if starts_like_question and not explicit_write and not has_meters:
         return None
 
+    is_fabric_order = "fabric" in normalized and any(word in normalized for word in ("ordered", "orderd", "order placed", "order ")) and "received" not in normalized and "recieved" not in normalized
+    is_fabric_received = "fabric" in normalized and ("received" in normalized or "recieved" in normalized)
+    is_dispatch_update = any(word in normalized for word in ("dispatched", "dispatch", "shipped", "ship ")) and _extract_pieces(normalized) is not None
+    stage = _stage_from_text(normalized)
+    is_stage_update = stage is not None and (explicit_write or any(word in normalized for word in ("stage", "status", "in ", "on ")))
+
+    packing_material_update = _parse_packing_material_update(pos, raw_text, normalized, explicit_write)
+    if packing_material_update is not None:
+        return packing_material_update
+
+    if is_dispatch_update and explicit_write:
+        pieces = _extract_pieces(normalized)
+        matches = _match_update_targets(pos, raw_text, normalized, str(pieces or ""))
+        if not matches:
+            return DirectAssistantAnswer("Please tell me the PO number or exact price-rate category before I record dispatch.")
+        if len(matches) > 1:
+            preview = ", ".join(po.po_number for po in matches[:5])
+            return DirectAssistantAnswer(f"I found {len(matches)} matching POs: {preview}. Which exact PO should I update?")
+        po = matches[0]
+        return PendingVoiceWrite(
+            action_type="dispatch_pieces",
+            po_number=po.po_number,
+            preview=f"record {pieces} pieces dispatched for {po.po_number} today",
+            payload={"pieces": int(pieces or 0)},
+        )
+
+    po_status_update = _parse_po_status_update(pos, raw_text, normalized, explicit_write)
+    if po_status_update is not None:
+        return po_status_update
+
     data_update = _parse_voice_data_update(pos, raw_text, normalized, explicit_write)
     if data_update is not None:
         return data_update
-
-    is_fabric_order = "fabric" in normalized and any(word in normalized for word in ("ordered", "orderd", "order placed", "order ")) and "received" not in normalized and "recieved" not in normalized
-    is_fabric_received = "fabric" in normalized and ("received" in normalized or "recieved" in normalized)
-    stage = _stage_from_text(normalized)
-    is_stage_update = stage is not None and (explicit_write or any(word in normalized for word in ("stage", "status", "in ", "on ")))
 
     if not (is_fabric_order or is_fabric_received or is_stage_update):
         return None
@@ -230,6 +262,8 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
 async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -> str:
     if pending.action_type == "bulk_data_update":
         return await _execute_bulk_data_update(db, pending)
+    if pending.action_type == "packing_material_update":
+        return await _execute_packing_material_update(db, pending)
     po = await _load_po_by_number(db, pending.po_number)
     if po is None:
         return f"I could not find {pending.po_number}, so nothing was updated."
@@ -239,6 +273,10 @@ async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -
         return await _execute_fabric_received(db, po, pending)
     if pending.action_type == "stage_update":
         return await _execute_stage_update(db, po, pending)
+    if pending.action_type == "dispatch_pieces":
+        return await _execute_dispatch_pieces(db, po, pending)
+    if pending.action_type == "po_status_update":
+        return await _execute_po_status_update(db, po, pending)
     return "I could not understand the pending update, so nothing was changed."
 
 
@@ -280,7 +318,21 @@ _PRODUCT_UPDATE_FIELDS: dict[str, dict[str, Any]] = {
         "label": "meter per piece",
         "scope": "product",
         "type": "decimal",
-        "synonyms": ("meter per piece", "metre per piece", "meters per piece", "meter usage", "fabric usage"),
+        "synonyms": (
+            "meter per piece",
+            "metre per piece",
+            "meters per piece",
+            "meter per pcs",
+            "meter pr pcs",
+            "mtr per pcs",
+            "per piece consumption",
+            "per pcs consumption",
+            "piece consumption",
+            "fabric consumption",
+            "consumption",
+            "meter usage",
+            "fabric usage",
+        ),
     },
     "wastage_percent": {
         "label": "wastage percent",
@@ -341,9 +393,14 @@ def _parse_voice_data_update(
 
 
 def _extract_update_field(normalized: str) -> tuple[str | None, dict[str, Any] | None]:
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
     for field, spec in {**_PO_UPDATE_FIELDS, **_PRODUCT_UPDATE_FIELDS}.items():
-        if any(synonym in normalized for synonym in spec["synonyms"]):
-            return field, spec
+        for synonym in spec["synonyms"]:
+            if synonym in normalized:
+                candidates.append((len(synonym), field, spec))
+    if candidates:
+        _, field, spec = sorted(candidates, key=lambda item: item[0], reverse=True)[0]
+        return field, spec
     return None, None
 
 
@@ -459,6 +516,8 @@ async def _execute_bulk_data_update(db: AsyncSession, pending: PendingVoiceWrite
         updated += 1
         if scope == "product":
             updated_products.add(str(target.id))
+        if scope in {"product", "purchase_order"}:
+            await ensure_po_operational_data(db, po, commit=False)
         await log_audit_event(
             db,
             action_type="voice_bulk_data_update",
@@ -477,6 +536,164 @@ async def _execute_bulk_data_update(db: AsyncSession, pending: PendingVoiceWrite
             f"{pending.payload['label']} is now {value_display} for the selected POs."
         )
     return f"Updated {updated} PO(s). {pending.payload['label']} is now {value_display}."
+
+
+def _parse_packing_material_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+    explicit_write: bool,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not explicit_write or not _mentions_packing_material(normalized):
+        return None
+    field = _packing_material_field(normalized)
+    if field is None:
+        return DirectAssistantAnswer("Which packing material value should I update: required, in stock, ordered, received, consumed, or supplier?")
+    material = _packing_material_name(normalized)
+    if material is None:
+        return DirectAssistantAnswer("Which packing material should I update: polybag, label, insert card, carton, or tape?")
+    value = _extract_packing_material_value(raw_text, normalized, field)
+    if value is None:
+        return DirectAssistantAnswer(f"What value should I set for {material} {field.replace('_qty', '').replace('_', ' ')}?")
+    matches = _match_update_targets(pos, raw_text, normalized, str(value))
+    if not matches:
+        return DirectAssistantAnswer("Please mention a PO number or a price-rate category like 99 before I update packing material.")
+    preview_pos = ", ".join(po.po_number for po in matches[:6])
+    if len(matches) > 6:
+        preview_pos += f", and {len(matches) - 6} more"
+    return PendingVoiceWrite(
+        action_type="packing_material_update",
+        po_number=f"{len(matches)} POs",
+        preview=f"set {material} {field.replace('_qty', '').replace('_', ' ')} to {value} for {len(matches)} PO(s): {preview_pos}",
+        payload={
+            "field": field,
+            "material": material,
+            "value": str(value),
+            "po_numbers": [po.po_number for po in matches],
+        },
+    )
+
+
+def _parse_po_status_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+    explicit_write: bool,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not explicit_write or "status" not in normalized:
+        return None
+    if any(word in normalized for word in ("packing material", "polybag", "carton", "label", "insert", "stiffener", "bag", "tag", "header", "tape")):
+        return None
+    status = _po_status_from_text(normalized)
+    if status is None:
+        return DirectAssistantAnswer("Which PO status should I set? For example: fabric ready, stitching, packing, dispatch, completed, or shortage.")
+    matches = _match_update_targets(pos, raw_text, normalized, status.value)
+    if not matches:
+        exact_po = _extract_po(pos, raw_text)
+        matches = [exact_po] if exact_po is not None else []
+    if not matches:
+        return DirectAssistantAnswer("Please tell me the PO number or exact price-rate category before I update status.")
+    if len(matches) > 1:
+        preview = ", ".join(po.po_number for po in matches[:5])
+        return DirectAssistantAnswer(f"I found {len(matches)} matching POs: {preview}. Which exact PO should I update?")
+    return PendingVoiceWrite(
+        action_type="po_status_update",
+        po_number=matches[0].po_number,
+        preview=f"set {matches[0].po_number} status to {status.value.replace('_', ' ')}",
+        payload={"status": status.value},
+    )
+
+
+async def _execute_packing_material_update(db: AsyncSession, pending: PendingVoiceWrite) -> str:
+    field = str(pending.payload["field"])
+    material = str(pending.payload["material"])
+    value = str(pending.payload["value"])
+    po_numbers = list(pending.payload.get("po_numbers") or [])
+    rows = await _matching_packing_material_rows(db, po_numbers, material)
+    if not rows:
+        return f"I could not find {material} packing material rows for the selected PO(s). Generate June materials first."
+    updated = 0
+    for row in rows:
+        old_value = getattr(row, field)
+        if field.endswith("_qty"):
+            setattr(row, field, Decimal(value))
+        else:
+            setattr(row, field, value)
+        recalculate_shortage(row)
+        updated += 1
+        await log_audit_event(
+            db,
+            action_type="voice_packing_material_update",
+            purchase_order_id=row.purchase_order_id,
+            entity_type="packing_material_inventory",
+            entity_id=str(row.id),
+            old_value_json={field: _json_safe_value(old_value), "material": row.material_name, "po_number": row.po_number},
+            new_value_json={field: value, "material": row.material_name, "po_number": row.po_number},
+            remarks="Confirmed voice command.",
+        )
+    await db.commit()
+    return f"Updated {updated} packing material row(s). {material} {field.replace('_qty', '').replace('_', ' ')} is now {value}."
+
+
+async def _execute_po_status_update(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    status = POStatus(str(pending.payload["status"]))
+    old_status = po.status.value
+    po.status = status
+    stage = _stage_for_po_status(status)
+    if stage is not None:
+        await _set_stage_position(db, po, stage)
+    await log_audit_event(
+        db,
+        action_type="voice_po_status_update",
+        purchase_order_id=po.id,
+        entity_type="purchase_order",
+        entity_id=str(po.id),
+        old_value_json={"status": old_status},
+        new_value_json={"status": po.status.value},
+        remarks="Confirmed voice command.",
+    )
+    await db.commit()
+    return f"Updated {po.po_number}. Status is now {po.status.value.replace('_', ' ')}."
+
+
+async def _list_packing_materials_for_owner(
+    db: AsyncSession,
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> str:
+    po = _extract_po(pos, raw_text)
+    material = _packing_material_name(normalized)
+    stmt = select(PackingMaterialInventory).order_by(PackingMaterialInventory.po_number.asc(), PackingMaterialInventory.material_name.asc())
+    if po is not None:
+        stmt = stmt.where(PackingMaterialInventory.purchase_order_id == po.id)
+    if material is not None:
+        stmt = stmt.where(PackingMaterialInventory.material_name.ilike(f"%{material.split()[0]}%"))
+    shortage_only = "short" in normalized or "shortage" in normalized
+    if shortage_only:
+        stmt = stmt.where(PackingMaterialInventory.shortage_qty > 0)
+    rows = list((await db.execute(stmt.limit(12))).scalars().all())
+    if not rows:
+        if shortage_only:
+            count_stmt = select(func.count(PackingMaterialInventory.id))
+            if po is not None:
+                count_stmt = count_stmt.where(PackingMaterialInventory.purchase_order_id == po.id)
+            if material is not None:
+                count_stmt = count_stmt.where(PackingMaterialInventory.material_name.ilike(f"%{material.split()[0]}%"))
+            total_rows = int((await db.execute(count_stmt)).scalar() or 0)
+            if total_rows:
+                return "No open packing material shortage found. Packing material rows are available on the Packing Materials page."
+        return "No packing material rows found. Use the Packing Materials page and click Generate June materials."
+    total_short = sum(Decimal(row.shortage_qty or 0) for row in rows)
+    lines = [f"Packing materials: {len(rows)} row(s) found. Total shortage shown: {total_short:f}."]
+    for row in rows[:8]:
+        lines.append(
+            f"- {row.po_number or 'Manual'} | {row.material_name} | required {row.required_qty:f} {row.unit}, "
+            f"in stock {row.in_stock_qty:f}, ordered {row.ordered_qty:f}, short {row.shortage_qty:f}."
+        )
+    if len(rows) > 8:
+        lines.append(f"...and {len(rows) - 8} more.")
+    return "\n".join(lines)
 
 
 def _coerce_update_value(value: str, value_type: str) -> Decimal | int | str:
@@ -663,9 +880,61 @@ async def _execute_stage_update(db: AsyncSession, po: PurchaseOrder, pending: Pe
     return f"Updated {po.po_number}. It is now shown in {stage.value.replace('_', ' ')} stage."
 
 
+async def _execute_dispatch_pieces(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    pieces = int(pending.payload["pieces"])
+    if pieces <= 0:
+        return "Dispatch quantity must be greater than zero, so nothing was updated."
+    packing_stage = await _stage_summary(db, po, StageName.packing)
+    packed_ready = int(packing_stage.approved_qty if packing_stage is not None else 0)
+    summary = await get_dispatch_summary(db, po.id)
+    available_to_ship = max(packed_ready - summary.total_dispatched, 0)
+    if pieces > available_to_ship:
+        return (
+            f"I did not dispatch {po.po_number}. Only {available_to_ship} packed pieces are available, "
+            f"but you asked to dispatch {pieces}. Update packing first, then dispatch."
+        )
+    today = date.today()
+    payload = DispatchLoadCreate(
+        purchase_order_id=po.id,
+        load_number=f"VOICE-{po.po_number}-{today.isoformat()}",
+        shipped_qty=pieces,
+        vehicle_type=None,
+        cost_type=DispatchCostType.manual,
+        manual_cost=Decimal("0"),
+        shipped_at=today,
+        document_status="complete",
+        remarks="Created from confirmed voice command.",
+    )
+    try:
+        await create_dispatch_load(db, payload)
+    except DomainError as error:
+        return f"I could not record dispatch for {po.po_number}: {error.detail}"
+
+    refreshed_summary = await get_dispatch_summary(db, po.id)
+    line = await _line_for_po(db, po)
+    if line is not None:
+        line.dispatch = "done" if refreshed_summary.pending_dispatch == 0 else "in_progress"
+        line.notes = _append_note(line.notes, f"Voice update {today.isoformat()}: dispatched {pieces} pcs.")
+        await db.commit()
+    return (
+        f"Updated {po.po_number}. Dispatched {pieces} pieces today. "
+        f"Remaining pieces are {refreshed_summary.pending_dispatch}."
+    )
+
+
 async def _line_for_po(db: AsyncSession, po: PurchaseOrder) -> ProductFabricLine | None:
     result = await db.execute(select(ProductFabricLine).where(ProductFabricLine.product_id == po.product_id))
     return result.scalars().first()
+
+
+async def _stage_summary(db: AsyncSession, po: PurchaseOrder, stage: StageName) -> StageSummary | None:
+    result = await db.execute(
+        select(StageSummary).where(
+            StageSummary.purchase_order_id == po.id,
+            StageSummary.stage == stage,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def _latest_open_mill_order(db: AsyncSession, po: PurchaseOrder) -> FabricMillOrder | None:
@@ -743,6 +1012,149 @@ def _extract_meters(normalized: str) -> Decimal | None:
         match = re.search(pattern, normalized)
         if match:
             return Decimal(match.group(1).replace(",", ""))
+    return None
+
+
+def _mentions_packing_material(normalized: str) -> bool:
+    return any(
+        token in normalized
+        for token in (
+            "packing material",
+            "packing materials",
+            "polybag",
+            "packet",
+            "tag",
+            "header",
+            "label",
+            "insert",
+            "stiffener",
+            "bag",
+            "carton",
+            "bale",
+            "tape",
+        )
+    )
+
+
+def _packing_material_field(normalized: str) -> str | None:
+    if "printed consumption" in normalized or "printed consumed" in normalized:
+        return "printed_consumption_qty"
+    if "actual consumption" in normalized or "actual consumed" in normalized:
+        return "actual_consumption_qty"
+    if "printed stock" in normalized:
+        return "printed_stock_qty"
+    if "actual stock" in normalized or "physical stock" in normalized:
+        return "actual_stock_qty"
+    if any(token in normalized for token in ("in stock", "stock", "available")):
+        return "actual_stock_qty"
+    if any(token in normalized for token in ("ordered", "orderd", "order placed")):
+        return "ordered_qty"
+    if any(token in normalized for token in ("received", "recieved")):
+        return "received_qty"
+    if any(token in normalized for token in ("consumed", "used")):
+        return "actual_consumption_qty"
+    if any(token in normalized for token in ("required", "needed", "need")):
+        return "required_qty"
+    if "supplier" in normalized:
+        return "supplier_name"
+    return None
+
+
+def _packing_material_name(normalized: str) -> str | None:
+    if "tag" in normalized:
+        return "Tag"
+    if "header" in normalized:
+        return "Header"
+    if "stiffener" in normalized:
+        return "Stiffener"
+    if "bag" in normalized:
+        return "Bag"
+    if "polybag" in normalized or "packet" in normalized:
+        return "Polybag / packet"
+    if "brand label" in normalized or "label" in normalized:
+        return "Brand label"
+    if "insert" in normalized or "card" in normalized:
+        return "Insert"
+    if "carton" in normalized or "bale" in normalized:
+        return "Master bale / carton"
+    if "tape" in normalized:
+        return "Tape roll"
+    return None
+
+
+def _extract_packing_material_value(raw_text: str, normalized: str, field: str) -> Decimal | str | None:
+    if field == "supplier_name":
+        match = re.search(r"(?:supplier|from|by)\s+([A-Za-z0-9 &.-]+)$", raw_text, re.IGNORECASE)
+        return re.sub(r"\s+", " ", match.group(1).strip()) if match else None
+    patterns = [
+        r"(?:to|with|as|at)\s*(\d[\d,]*(?:\.\d+)?)",
+        r"(?:stock|ordered|orderd|received|recieved|consumed|used|required|needed)\s*(?:is|to|with|as|at)?\s*(\d[\d,]*(?:\.\d+)?)",
+        r"(\d[\d,]*(?:\.\d+)?)\s*(?:pcs|pieces|piece|rolls?|bales?|cartons?|qty|quantity)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return Decimal(match.group(1).replace(",", ""))
+    return None
+
+
+async def _matching_packing_material_rows(
+    db: AsyncSession,
+    po_numbers: list[str],
+    material: str,
+) -> list[PackingMaterialInventory]:
+    stmt = select(PackingMaterialInventory).where(PackingMaterialInventory.material_name == material)
+    if po_numbers:
+        stmt = stmt.where(PackingMaterialInventory.po_number.in_(po_numbers))
+    result = await db.execute(stmt.order_by(PackingMaterialInventory.po_number.asc()))
+    return list(result.scalars().all())
+
+
+def _po_status_from_text(normalized: str) -> POStatus | None:
+    status_aliases = {
+        POStatus.fabric_ready: ("fabric ready", "fabric_ready", "ready fabric"),
+        POStatus.shortage: ("shortage", "fabric shortage", "short"),
+        POStatus.cutting: ("cutting",),
+        POStatus.stitching: ("stitching",),
+        POStatus.packing: ("packing",),
+        POStatus.dispatch: ("dispatch", "ready for dispatch"),
+        POStatus.partially_dispatched: ("partially dispatched", "partial dispatch"),
+        POStatus.dispatched_with_exception: ("dispatch exception", "dispatched with exception"),
+        POStatus.completed: ("completed", "complete", "done"),
+        POStatus.delayed: ("delayed", "late"),
+        POStatus.cancelled: ("cancelled", "canceled"),
+        POStatus.draft: ("draft",),
+    }
+    for status, aliases in status_aliases.items():
+        if any(alias in normalized for alias in aliases):
+            return status
+    return None
+
+
+def _stage_for_po_status(status: POStatus) -> StageName | None:
+    return {
+        POStatus.fabric_ready: StageName.fabric_ready,
+        POStatus.cutting: StageName.cutting,
+        POStatus.stitching: StageName.stitching,
+        POStatus.size_inspection: StageName.size_inspection,
+        POStatus.quality_check: StageName.quality_check,
+        POStatus.packing: StageName.packing,
+        POStatus.dispatch: StageName.dispatch,
+        POStatus.partially_dispatched: StageName.dispatch,
+        POStatus.dispatched_with_exception: StageName.dispatch,
+        POStatus.completed: StageName.dispatch,
+    }.get(status)
+
+
+def _extract_pieces(normalized: str) -> int | None:
+    patterns = [
+        r"(\d[\d,]*)\s*(?:pcs|pieces|piece)\b",
+        r"(?:dispatch(?:ed)?|shipped|ship)\s+(\d[\d,]*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return int(Decimal(match.group(1).replace(",", "")))
     return None
 
 

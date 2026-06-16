@@ -6,15 +6,22 @@ from typing import List
 from typing_extensions import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import require_dispatch_document_user, require_dispatcher, require_owner_or_manager
 from app.models.user import User
-from app.schemas.dispatch import DispatchDocumentUpdate, DispatchLoadCreate, DispatchLoadRead, DispatchSummaryRead
-from app.services.dispatch_engine import create_dispatch_load, get_dispatch_summary, list_dispatch_loads, update_dispatch_documents
+from app.schemas.dispatch import DispatchDocumentUpdate, DispatchLoadCreate, DispatchLoadRead, DispatchLoadUpdate, DispatchSummaryRead
+from app.services.dispatch_engine import (
+    create_dispatch_load,
+    delete_dispatch_load,
+    get_dispatch_summary,
+    list_dispatch_loads,
+    update_dispatch_documents,
+    update_dispatch_load,
+)
 from app.services.dispatch_planner import plan_dispatch
 
 router = APIRouter()
@@ -135,3 +142,34 @@ async def update_documents(
         updated_by=user.id,
         updated_role=user.role.value,
     )
+
+
+@router.patch("/{dispatch_load_id}", response_model=DispatchLoadRead)
+async def update_load(
+    dispatch_load_id: UUID,
+    payload: DispatchLoadUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_dispatcher)],
+) -> DispatchLoadRead:
+    return await update_dispatch_load(
+        db,
+        dispatch_load_id,
+        payload,
+        updated_by=user.id,
+        updated_role=user.role.value,
+    )
+
+
+@router.delete("/{dispatch_load_id}", status_code=204, response_class=Response)
+async def delete_load(
+    dispatch_load_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_dispatcher)],
+) -> Response:
+    await delete_dispatch_load(
+        db,
+        dispatch_load_id,
+        deleted_by=user.id,
+        deleted_role=user.role.value,
+    )
+    return Response(status_code=204)

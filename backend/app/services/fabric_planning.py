@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_CEILING
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import FabricPlanStatus, FabricVerificationStatus, POStatus, ReceiptStatus, StageName, StageStatus
@@ -218,6 +218,13 @@ async def list_fabric_inventory(db: AsyncSession) -> list[FabricInventory]:
     return list(result.scalars().all())
 
 
+async def get_fabric_inventory(db: AsyncSession, inventory_id: UUID) -> FabricInventory:
+    inventory = await db.get(FabricInventory, inventory_id)
+    if inventory is None:
+        raise DomainError(status_code=404, detail="Fabric inventory row not found")
+    return inventory
+
+
 async def upsert_fabric_inventory(db: AsyncSession, payload: object) -> FabricInventory:
     result = await db.execute(
         select(FabricInventory).where(
@@ -244,6 +251,31 @@ async def upsert_fabric_inventory(db: AsyncSession, payload: object) -> FabricIn
     await db.commit()
     await db.refresh(inventory)
     return inventory
+
+
+async def update_fabric_inventory(db: AsyncSession, inventory_id: UUID, payload: object) -> FabricInventory:
+    inventory = await get_fabric_inventory(db, inventory_id)
+    old_spec = _inventory_spec(inventory)
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return inventory
+
+    for field, value in updates.items():
+        setattr(inventory, field, value)
+    await db.flush()
+    await _refresh_pos_for_inventory_specs(db, [old_spec, _inventory_spec(inventory)])
+    await db.commit()
+    await db.refresh(inventory)
+    return inventory
+
+
+async def delete_fabric_inventory(db: AsyncSession, inventory_id: UUID) -> None:
+    inventory = await get_fabric_inventory(db, inventory_id)
+    old_spec = _inventory_spec(inventory)
+    await db.delete(inventory)
+    await db.flush()
+    await _refresh_pos_for_inventory_specs(db, [old_spec])
+    await db.commit()
 
 
 async def receive_fabric(db: AsyncSession, payload: object) -> dict[str, object]:
@@ -357,6 +389,41 @@ async def get_inventory_by_spec(
         )
     )
     return result.scalar_one_or_none()
+
+
+def _inventory_spec(inventory: FabricInventory) -> tuple[str, str, Decimal, Decimal]:
+    return (
+        inventory.fabric_type,
+        inventory.color,
+        Decimal(str(inventory.gsm)),
+        Decimal(str(inventory.width)),
+    )
+
+
+async def _refresh_pos_for_inventory_specs(
+    db: AsyncSession,
+    specs: list[tuple[str, str, Decimal, Decimal]],
+) -> None:
+    unique_specs = list(dict.fromkeys(specs))
+    if not unique_specs:
+        return
+    conditions = [
+        and_(
+            Product.fabric_type == fabric_type,
+            Product.color == color,
+            Product.gsm == gsm,
+            Product.width == width,
+        )
+        for fabric_type, color, gsm, width in unique_specs
+    ]
+    products = (await db.execute(select(Product).where(or_(*conditions)))).scalars().all()
+    if not products:
+        return
+    pos = (await db.execute(
+        select(PurchaseOrder).where(PurchaseOrder.product_id.in_([product.id for product in products]))
+    )).scalars().all()
+    for po in pos:
+        await build_or_refresh_fabric_plan(db, po)
 
 
 async def list_shortage_plans(db: AsyncSession) -> list[FabricPlan]:
