@@ -33,13 +33,8 @@ class Settings(BaseSettings):
         "ionic://localhost",
         "null",
         "file://",
-        "https://fingers-organizations-forecast-todd.trycloudflare.com",
-        "https://detective-divx-graduates-winning.trycloudflare.com",
-        "https://complete-yeah-early-definitions.trycloudflare.com",
-        "https://presentations-machines-athens-purpose.trycloudflare.com",
-        "https://added-edward-portable-bali.trycloudflare.com",
     ]
-    cors_origin_regex: Optional[str] = r"^https://.*\.trycloudflare\.com$"
+    cors_origin_regex: Optional[str] = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Download, FileText, Loader2, Mic, Send, Sparkles, Trash2, User } from "lucide-react";
+import { Bot, CheckCircle2, Download, Edit3, FileText, Loader2, Mic, Send, Sparkles, Square, Trash2, User, XCircle } from "lucide-react";
 
 import { getApiErrorMessage } from "../api/axios";
-import { askAssistant, fetchArtifactBlob, type VoiceArtifact } from "../api/voice";
+import { askAssistant, fetchArtifactBlob, type VoiceArtifact, type VoiceAskResponse } from "../api/voice";
 import { ASSISTANT_SCENARIOS, SUGGESTED_OPENERS, type AssistantScenarioGroup } from "../data/assistantScenarios";
 import { useVoiceStream } from "../hooks/useVoiceStream";
 import { useAssistantStore } from "../store/assistantStore";
@@ -54,8 +54,9 @@ export default function AssistantPage() {
   const [input, setInput] = useState("");
   const [askInFlight, setAskInFlight] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<VoiceAskResponse["pending_action"]>(null);
 
-  const { state: voiceState, error: voiceError, startCall, endCall } = useVoiceStream();
+  const { state: voiceState, error: voiceError, latestResponse, startCall, endCall, stopCall } = useVoiceStream();
   const voiceBusy = voiceState === "listening" || voiceState === "thinking" || voiceState === "speaking" || voiceState === "connecting";
   const assistantThinking = askInFlight || voiceState === "thinking";
 
@@ -64,6 +65,12 @@ export default function AssistantPage() {
     const node = transcriptRef.current;
     if (node) node.scrollTop = node.scrollHeight;
   }, [turns.length, assistantThinking]);
+
+  useEffect(() => {
+    if (latestResponse) {
+      setPendingAction(latestResponse.pending_action ?? null);
+    }
+  }, [latestResponse]);
 
   const isEmpty = turns.length === 0;
 
@@ -81,6 +88,7 @@ export default function AssistantPage() {
         text: response.answer ?? "",
         artifacts: response.artifacts ?? [],
       });
+      setPendingAction(response.pending_action ?? null);
     } catch (err) {
       const message = getApiErrorMessage(err);
       setAskError(message);
@@ -118,10 +126,23 @@ export default function AssistantPage() {
     endCall();
   }
 
+  function handleEditPending() {
+    if (!pendingAction) return;
+    setInput(pendingAction.confirmation_message ?? "");
+  }
+
+  const statusLabel = askInFlight || voiceState === "thinking"
+    ? "Understanding"
+    : pendingAction && pendingAction.missing_fields.length === 0
+      ? "Waiting for confirmation"
+      : voiceState === "listening"
+        ? "Listening"
+        : voiceState === "speaking"
+          ? "Speaking"
+          : "Ready";
+
   return (
-    <section
-      className="panel grid h-[calc(100dvh-7rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-0"
-    >
+    <section className="panel grid h-[calc(100dvh-7rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-0">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
         <div className="flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-teal-700 text-white">
@@ -129,7 +150,7 @@ export default function AssistantPage() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-slate-950">Factory Assistant</h1>
-            <p className="text-xs text-slate-500">Ask in text or voice — get answers, PDFs, and live data.</p>
+            <p className="text-xs text-slate-500">Speak or type an update. Status: <span className="font-semibold text-teal-700">{statusLabel}</span></p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -141,8 +162,8 @@ export default function AssistantPage() {
             disabled={askInFlight || voiceState === "thinking" || voiceState === "speaking" || voiceState === "connecting"}
             className={
               voiceState === "listening"
-                ? "inline-flex h-9 select-none items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
-                : "inline-flex h-9 select-none items-center gap-2 rounded-md bg-teal-700 px-3 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+                ? "inline-flex min-h-12 select-none items-center gap-2 rounded-md bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                : "inline-flex min-h-12 select-none items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
             }
             style={{ touchAction: "none" }}
             aria-label="Hold to speak"
@@ -155,11 +176,24 @@ export default function AssistantPage() {
               </span>
             ) : null}
           </button>
+          {voiceState === "listening" || voiceState === "speaking" ? (
+            <button
+              type="button"
+              onClick={stopCall}
+              className="inline-flex min-h-12 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              <Square className="h-4 w-4" />
+              Stop
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={clear}
+            onClick={() => {
+              setPendingAction(null);
+              clear();
+            }}
             disabled={isEmpty}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-12 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Clear conversation"
           >
             <Trash2 className="h-4 w-4" />
@@ -243,6 +277,31 @@ export default function AssistantPage() {
                   </div>
                 </div>
               ) : null}
+              {pendingAction && pendingAction.missing_fields.length === 0 ? (
+                <div className="flex justify-start">
+                  <div className="flex max-w-[92%] gap-2">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-teal-100 text-teal-800">
+                      <Bot className="h-4 w-4" />
+                    </div>
+                    <div className="rounded-xl border border-teal-200 bg-white p-3 text-sm shadow-sm">
+                      <p className="font-semibold text-slate-950">Confirm update</p>
+                      <p className="mt-1 text-slate-700">{pendingAction.confirmation_message ?? "Confirm this update?"}</p>
+                      {pendingAction.po_number ? <p className="mt-1 text-xs font-semibold text-teal-700">Affected PO: {pendingAction.po_number}</p> : null}
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        <button type="button" onClick={() => void submit("confirm")} className="inline-flex min-h-11 items-center justify-center gap-1 rounded-md bg-teal-700 px-3 text-xs font-semibold text-white">
+                          <CheckCircle2 className="h-4 w-4" /> Confirm
+                        </button>
+                        <button type="button" onClick={handleEditPending} className="inline-flex min-h-11 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700">
+                          <Edit3 className="h-4 w-4" /> Edit
+                        </button>
+                        <button type="button" onClick={() => void submit("cancel")} className="inline-flex min-h-11 items-center justify-center gap-1 rounded-md border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-700">
+                          <XCircle className="h-4 w-4" /> Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -284,19 +343,19 @@ export default function AssistantPage() {
             {askError ?? voiceError}
           </div>
         ) : null}
-        <form onSubmit={handleSubmit} className="flex items-end gap-2 px-4 py-3">
+        <form onSubmit={handleSubmit} className="flex items-end gap-2 px-4 py-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask anything — e.g. 'Generate today's dispatch PDF'"
             rows={1}
-            className="field max-h-32 min-h-[2.5rem] flex-1 resize-none py-2 leading-snug"
+            className="field max-h-32 min-h-12 flex-1 resize-none py-3 text-base leading-snug"
             disabled={assistantThinking}
           />
           <button
             type="submit"
-            className="primary-button inline-flex h-10 items-center gap-2"
+            className="primary-button inline-flex min-h-12 items-center gap-2 px-4"
             disabled={!input.trim() || assistantThinking}
           >
             <Send className="h-4 w-4" />

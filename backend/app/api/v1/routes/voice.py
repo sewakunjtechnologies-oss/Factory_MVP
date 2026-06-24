@@ -13,6 +13,7 @@ HTTP responses so the frontend can show a useful toast instead of a generic
 from __future__ import annotations
 
 import logging
+import re
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,8 +34,9 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.user import User
 from app.models.vehicle import Vehicle
 from app.services.voice import artifacts_scope, ask_async, use_session
+from app.services.voice.action_model import PendingActionSnapshot
 from app.services.voice.client import VoiceConfigError
-from app.services.voice.factory_queries import answer_factory_question
+from app.services.voice.factory_queries import answer_factory_question, get_pending_action_snapshot
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,7 +56,10 @@ class VoiceArtifact(BaseModel):
 
 class VoiceAskResponse(BaseModel):
     answer: str
+    speech_text: str | None = None
     artifacts: List[VoiceArtifact] = Field(default_factory=list)
+    pending_action: PendingActionSnapshot | None = None
+    requires_confirmation: bool = False
 
 
 _GEMINI_USER_MESSAGES = {
@@ -99,23 +104,37 @@ async def ask_voice_assistant(
     except Exception as error:  # noqa: BLE001
         logger.exception("voice/ask: unexpected failure")
         raise HTTPException(status_code=500, detail="The assistant hit an unexpected error.") from error
+    pending_action = get_pending_action_snapshot()
     return VoiceAskResponse(
         answer=answer,
+        speech_text=_speech_text(answer),
         artifacts=[VoiceArtifact.model_validate(item) for item in artifacts],
+        pending_action=pending_action,
+        requires_confirmation=bool(pending_action and not pending_action.missing_fields),
     )
 
 
-async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) -> str:
-    """Attach a compact live DB snapshot so Gemini answers from factory data.
+def _speech_text(answer: str) -> str:
+    text = re.sub(r"\s+", " ", answer.replace("|", " ")).strip()
+    if len(text) <= 700:
+        return text
+    return text[:697].rsplit(" ", 1)[0] + "..."
 
-    The tool catalog can still be used by Gemini for detailed lookups and PDFs,
-    but this context keeps broad/natural questions grounded instead of generic.
-    """
-    po_result = await db.execute(
+
+async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) -> str:
+    """Attach only the minimum live DB context needed for Gemini fallback."""
+    mentioned_pos = _mentioned_po_tokens(owner_message)
+    po_stmt = (
         select(PurchaseOrder)
         .options(selectinload(PurchaseOrder.product), selectinload(PurchaseOrder.fabric_plan), selectinload(PurchaseOrder.dispatch_loads))
-        .order_by(PurchaseOrder.order_date.desc(), PurchaseOrder.po_number.asc())
-        .limit(45)
+        .order_by(PurchaseOrder.promise_delivery_date.asc(), PurchaseOrder.po_number.asc())
+    )
+    if mentioned_pos:
+        po_stmt = po_stmt.where(PurchaseOrder.po_number.in_(mentioned_pos)).limit(6)
+    else:
+        po_stmt = po_stmt.limit(10)
+    po_result = await db.execute(
+        po_stmt
     )
     pos = list(po_result.scalars().all())
 
@@ -123,7 +142,7 @@ async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) ->
         select(ProductFabricLine, Product)
         .join(Product, Product.id == ProductFabricLine.product_id)
         .order_by(Product.product_name.asc(), ProductFabricLine.fabric_code.asc())
-        .limit(60)
+        .limit(10)
     )
     fabric_lines = line_result.all()
 
@@ -131,18 +150,18 @@ async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) ->
         select(FabricMillOrder, PurchaseOrder)
         .join(PurchaseOrder, PurchaseOrder.id == FabricMillOrder.purchase_order_id)
         .order_by(FabricMillOrder.committed_delivery_date.asc())
-        .limit(30)
+        .limit(8)
     )
     mill_orders = mill_result.all()
 
-    vehicle_result = await db.execute(select(Vehicle).where(Vehicle.is_active.is_(True)).order_by(Vehicle.cbm_capacity.asc()))
+    vehicle_result = await db.execute(select(Vehicle).where(Vehicle.is_active.is_(True)).order_by(Vehicle.cbm_capacity.asc()).limit(8))
     vehicles = list(vehicle_result.scalars().all())
 
     dispatch_result = await db.execute(
         select(DispatchLoad, PurchaseOrder)
         .join(PurchaseOrder, PurchaseOrder.id == DispatchLoad.purchase_order_id)
         .order_by(DispatchLoad.shipped_at.desc())
-        .limit(25)
+        .limit(8)
     )
     dispatch_loads = dispatch_result.all()
 
@@ -155,10 +174,10 @@ async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) ->
             "- "
             f"{po.po_number}: product={product.product_name if product else 'unknown'}, "
             f"qty={po.order_quantity_pcs}, status={po.status.value}, "
-            f"order_date={po.order_date}, deadline={po.promise_delivery_date}, "
+            f"deadline={po.promise_delivery_date}, "
             f"fabric_required_m={plan.total_required_m if plan else 'not_planned'}, "
             f"fabric_shortage_m={plan.shortage_m if plan else 'unknown'}, "
-            f"shipped_pcs={shipped}, notes={(po.notes or '')[:120]}"
+            f"shipped_pcs={shipped}"
         )
 
     fabric_context = []
@@ -196,8 +215,8 @@ async def _build_grounded_gemini_prompt(db: AsyncSession, owner_message: str) ->
     return f"""
 The owner asked: {owner_message}
 
-Use this live database context first. If exact detail is missing, use the available voice tools. Do not invent records.
-Answer in a short factory-owner style. If the owner asks to update/create/mark/order/receive/move anything, ask for confirmation before writing unless the system tool has already returned a preview.
+Use this compact live context only. Do not invent records.
+Answer in short factory-owner language. For writes, ask for confirmation; do not claim you updated unless a tool says it was done.
 
 Current PO snapshot:
 {chr(10).join(po_lines) or "- No POs found."}
@@ -214,3 +233,12 @@ Truck load planner vehicle lengths:
 Recent dispatch loads:
 {chr(10).join(dispatch_context) or "- No dispatch loads found."}
 """.strip()
+
+
+def _mentioned_po_tokens(message: str) -> list[str]:
+    tokens = []
+    for match in re.finditer(r"\b(?:PO[-\s#]*)?([A-Z]+[-\s]?\d{3,4}[-\s]?\d{0,4}|JUNE[-\s]?\d{3})\b", message.upper()):
+        value = re.sub(r"\s+", "-", match.group(1)).replace("PO-", "")
+        if value and value not in tokens:
+            tokens.append(value)
+    return tokens

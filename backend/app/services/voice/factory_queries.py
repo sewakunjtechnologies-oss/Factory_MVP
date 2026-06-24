@@ -6,12 +6,14 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 from urllib.parse import quote
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.enums import DispatchCostType, POStatus, StageName
+from app.models.contractor import Contractor
+from app.models.enums import ContractorType, DispatchCostType, POStatus, StageName
 from app.models.fabric import FabricMillOrder, FabricPlan, FabricReceipt
 from app.models.enums import FabricMillOrderStatus, FabricPlanStatus, FabricVerificationStatus, ReceiptStatus, StageStatus
 from app.models.mill_requirement import MillOrderRequirement, MillOrderRequirementStatus
@@ -21,17 +23,20 @@ from app.models.product_fabric_line import ProductFabricLine
 from app.models.purchase_order import PurchaseOrder
 from app.models.reminder import Reminder, ReminderPriority, ReminderStatus, ReminderType
 from app.models.stage import ContractorAllocation, StageSummary
+from app.schemas.stage import ContractorAllocationCreate, StageProgressCreate
 from app.services.audit_service import log_audit_event
 from app.schemas.dispatch import DispatchLoadCreate
 from app.services.dispatch_engine import create_dispatch_load, get_dispatch_summary
 from app.services.exceptions import DomainError
 from app.services.operational_backfill import TERMINAL_PO_STATUSES, ensure_all_operational_data, ensure_po_operational_data
 from app.services.packing_material_service import recalculate_shortage
+from app.services.stage_engine import allocate_contractor, record_stage_progress
 from app.services.pdf_reports.report_registry import REPORT_REGISTRY
 from app.services.pdf_reports.report_schemas import ReportGenerateRequest
 from app.services.pdf_reports.report_service import ReportService
 from app.services.quotation_service import build_po_quotation, generate_po_quotation_pdf
 from app.services.voice.artifacts import add_artifact
+from app.services.voice.action_model import PendingActionSnapshot
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,9 @@ class PendingVoiceWrite:
     po_number: str
     preview: str
     payload: dict[str, Any] = field(default_factory=dict)
+    action_id: str = field(default_factory=lambda: uuid4().hex)
+    original_instruction: str | None = None
+    missing_fields: list[str] = field(default_factory=list)
 
 
 _HELP_TEXT = (
@@ -54,6 +62,20 @@ _HELP_TEXT = (
 )
 
 _PENDING_WRITE: dict[str, PendingVoiceWrite] = {}
+
+
+def get_pending_action_snapshot() -> PendingActionSnapshot | None:
+    pending = _PENDING_WRITE.get("global")
+    if pending is None:
+        return None
+    return PendingActionSnapshot(
+        action_id=pending.action_id,
+        intent=pending.action_type,
+        po_number=pending.po_number if pending.po_number and not pending.po_number.startswith("__") else None,
+        entities=dict(pending.payload),
+        missing_fields=list(pending.missing_fields),
+        confirmation_message=pending.preview or None,
+    )
 
 
 async def answer_factory_question(db: AsyncSession, message: str) -> DirectAssistantAnswer | None:
@@ -161,6 +183,9 @@ async def _handle_voice_write_intent(
         pending = _PENDING_WRITE.pop("global", None)
         if pending is None:
             return DirectAssistantAnswer("There is no pending update to confirm.")
+        if pending.missing_fields:
+            _PENDING_WRITE["global"] = pending
+            return DirectAssistantAnswer(_missing_field_question(pending))
         return DirectAssistantAnswer(await _execute_pending_write(db, pending))
     if _is_cancel(normalized):
         pending = _PENDING_WRITE.pop("global", None)
@@ -168,24 +193,181 @@ async def _handle_voice_write_intent(
             return DirectAssistantAnswer("No pending update was active.")
         return DirectAssistantAnswer(f"Cancelled. I did not update {pending.po_number}.")
 
+    followup = _try_complete_pending_action(pos, raw_text, normalized)
+    if followup is not None:
+        return followup
+
     preview = _parse_voice_write(pos, raw_text, normalized)
     if isinstance(preview, DirectAssistantAnswer):
         return preview
     if preview is None:
         return None
     _PENDING_WRITE["global"] = preview
-    return DirectAssistantAnswer(f"I understood this: {preview.preview}. Should I update it? Say yes to confirm, or no to cancel.")
+    if preview.missing_fields:
+        return DirectAssistantAnswer(_missing_field_question(preview))
+    return DirectAssistantAnswer(_confirmation_prompt(preview))
+
+
+def _try_complete_pending_action(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> DirectAssistantAnswer | None:
+    pending = _PENDING_WRITE.get("global")
+    if pending is None or not pending.missing_fields:
+        return None
+    if _looks_like_new_action(normalized):
+        _PENDING_WRITE.pop("global", None)
+        return None
+
+    po = _extract_po(pos, raw_text)
+    if po is not None:
+        pending.po_number = po.po_number
+        pending.payload["po_number"] = po.po_number
+
+    meters = _extract_meters(normalized)
+    if meters is not None:
+        pending.payload["meters"] = str(meters)
+
+    pieces = _extract_pieces(normalized)
+    if pieces is not None:
+        pending.payload["pieces"] = int(pieces)
+
+    mill_name = _extract_mill_name(raw_text)
+    if mill_name is not None:
+        pending.payload["mill_name"] = mill_name
+
+    contractor_name = _extract_contractor_name(raw_text)
+    if contractor_name is not None:
+        pending.payload["contractor_name"] = contractor_name
+
+    delivery_date = _extract_date(raw_text, normalized)
+    if delivery_date is not None:
+        pending.payload["date"] = delivery_date.isoformat()
+
+    _refresh_missing_fields(pending)
+    if pending.missing_fields:
+        return DirectAssistantAnswer(_missing_field_question(pending))
+    pending.preview = _build_preview(pending)
+    _PENDING_WRITE["global"] = pending
+    return DirectAssistantAnswer(_confirmation_prompt(pending))
+
+
+def _looks_like_new_action(normalized: str) -> bool:
+    return any(
+        token in normalized
+        for token in (
+            "dispatch",
+            "fabric arrived",
+            "fabric received",
+            "kapda",
+            "cutting",
+            "stitching",
+            "packing",
+            "mark ",
+            "update ",
+            "change ",
+            "complete",
+        )
+    )
+
+
+def _refresh_missing_fields(pending: PendingVoiceWrite) -> None:
+    required = _required_fields_for_action(pending.action_type)
+    missing: list[str] = []
+    for field_name in required:
+        if field_name == "po_number":
+            if not pending.po_number or pending.po_number.startswith("__"):
+                missing.append(field_name)
+        elif not pending.payload.get(field_name):
+            missing.append(field_name)
+    pending.missing_fields = missing
+
+
+def _required_fields_for_action(action_type: str) -> tuple[str, ...]:
+    return {
+        "fabric_received": ("po_number", "meters", "mill_name"),
+        "fabric_ordered": ("po_number", "meters", "mill_name"),
+        "dispatch_pieces": ("po_number", "pieces"),
+        "complete_stage": ("po_number", "stage", "pieces"),
+        "assign_to_stitching": ("po_number", "pieces", "contractor_name"),
+        "quality_quantities": ("po_number",),
+        "update_delivery_date": ("po_number", "date"),
+        "po_status_update": ("po_number", "status"),
+        "mark_completed": ("po_number",),
+    }.get(action_type, ())
+
+
+def _missing_field_question(pending: PendingVoiceWrite) -> str:
+    missing = set(pending.missing_fields)
+    if "po_number" in missing:
+        return "Which PO should I update?"
+    if pending.action_type in {"fabric_received", "fabric_ordered"}:
+        if {"meters", "mill_name"}.issubset(missing):
+            return f"How many meters, and from which mill, for {pending.po_number}?"
+        if "meters" in missing:
+            return f"How many meters for {pending.po_number}?"
+        if "mill_name" in missing:
+            return f"Which mill is this fabric from for {pending.po_number}?"
+    if "pieces" in missing:
+        return f"How many pieces for {pending.po_number}?"
+    if "contractor_name" in missing:
+        return f"Which stitching contractor should receive {pending.po_number}?"
+    if "date" in missing:
+        return f"What date should I set for {pending.po_number}?"
+    return "I need one more detail before I can update it."
+
+
+def _confirmation_prompt(pending: PendingVoiceWrite) -> str:
+    return f"Confirm: {pending.preview}? Say yes to confirm, or no to cancel."
+
+
+def _build_preview(pending: PendingVoiceWrite) -> str:
+    if pending.action_type == "fabric_received":
+        return f"receive {pending.payload['meters']} meters from {pending.payload['mill_name']} for {pending.po_number} today"
+    if pending.action_type == "fabric_ordered":
+        return f"record fabric ordered for {pending.po_number}, {pending.payload['meters']} meters from {pending.payload['mill_name']}"
+    if pending.action_type == "dispatch_pieces":
+        return f"dispatch {pending.payload['pieces']} pieces for {pending.po_number} today"
+    if pending.action_type == "complete_stage":
+        return f"mark {pending.payload['stage'].replace('_', ' ')} complete for {pending.payload['pieces']} pieces of {pending.po_number}"
+    if pending.action_type == "assign_to_stitching":
+        return f"send {pending.payload['pieces']} pieces of {pending.po_number} to {pending.payload['contractor_name']} for stitching"
+    if pending.action_type == "quality_quantities":
+        parts = []
+        if int(pending.payload.get("repair_pieces") or 0):
+            parts.append(f"{pending.payload['repair_pieces']} repair")
+        if int(pending.payload.get("alteration_pieces") or 0):
+            parts.append(f"{pending.payload['alteration_pieces']} alteration")
+        if int(pending.payload.get("rejected_pieces") or 0):
+            parts.append(f"{pending.payload['rejected_pieces']} rejected")
+        return f"record {' and '.join(parts)} pieces for {pending.po_number}"
+    if pending.action_type == "update_delivery_date":
+        return f"update shipment date of {pending.po_number} to {pending.payload['date']}"
+    if pending.action_type == "mark_completed":
+        warning = pending.payload.get("warning")
+        return f"mark {pending.po_number} completed{f' ({warning})' if warning else ''}"
+    return pending.preview
 
 
 def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str) -> PendingVoiceWrite | DirectAssistantAnswer | None:
-    explicit_write = any(word in normalized for word in ("update", "record", "log ", "mark ", "move ", "moved ", "set ", "change "))
+    explicit_write = any(word in normalized for word in ("update", "record", "log ", "mark ", "move ", "moved ", "set ", "change ", "kar do", "kardo"))
+    if normalized.startswith(("dispatch ", "ship ", "send ")):
+        explicit_write = True
     has_meters = _extract_meters(normalized) is not None
     starts_like_question = normalized.startswith(("which ", "what ", "show ", "any ", "how ", "is ", "are "))
     if starts_like_question and not explicit_write and not has_meters:
         return None
 
-    is_fabric_order = "fabric" in normalized and any(word in normalized for word in ("ordered", "orderd", "order placed", "order ")) and "received" not in normalized and "recieved" not in normalized
-    is_fabric_received = "fabric" in normalized and ("received" in normalized or "recieved" in normalized)
+    is_fabric_order = (
+        ("fabric" in normalized or "kapda" in normalized)
+        and any(word in normalized for word in ("ordered", "orderd", "order placed", "order "))
+        and not any(word in normalized for word in ("received", "recieved", "arrived", "aa gaya", "aagaya"))
+    )
+    is_fabric_received = (
+        ("fabric" in normalized or "kapda" in normalized)
+        and any(word in normalized for word in ("received", "recieved", "arrived", "arrival", "aa gaya", "aagaya", "receive ho gaya"))
+    )
     is_dispatch_update = any(word in normalized for word in ("dispatched", "dispatch", "shipped", "ship ")) and _extract_pieces(normalized) is not None
     stage = _stage_from_text(normalized)
     is_stage_update = stage is not None and (explicit_write or any(word in normalized for word in ("stage", "status", "in ", "on ")))
@@ -194,7 +376,7 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
     if packing_material_update is not None:
         return packing_material_update
 
-    if is_dispatch_update and explicit_write:
+    if is_dispatch_update:
         pieces = _extract_pieces(normalized)
         matches = _match_update_targets(pos, raw_text, normalized, str(pieces or ""))
         if not matches:
@@ -219,37 +401,58 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
         return data_update
 
     if not (is_fabric_order or is_fabric_received or is_stage_update):
+        delivery_update = _parse_delivery_date_update(pos, raw_text, normalized, explicit_write)
+        if delivery_update is not None:
+            return delivery_update
+        completion = _parse_completion_update(pos, raw_text, normalized)
+        if completion is not None:
+            return completion
+        assignment = _parse_stitching_assignment(pos, raw_text, normalized)
+        if assignment is not None:
+            return assignment
+        quality = _parse_quality_quantity_update(pos, raw_text, normalized)
+        if quality is not None:
+            return quality
+        dispatch_without_qty = _parse_dispatch_without_quantity(pos, raw_text, normalized)
+        if dispatch_without_qty is not None:
+            return dispatch_without_qty
         return None
 
     po = _extract_po(pos, raw_text)
-    if po is None:
-        return DirectAssistantAnswer("Please tell me the PO number or exact PO category name before I update anything.")
 
     if is_fabric_order:
         meters = _extract_meters(normalized)
-        if meters is None:
-            return DirectAssistantAnswer(f"How many meters were ordered for {po.po_number}?")
-        mill_name = _extract_mill_name(raw_text) or "Voice Update Mill"
-        return PendingVoiceWrite(
+        mill_name = _extract_mill_name(raw_text)
+        pending = PendingVoiceWrite(
             action_type="fabric_ordered",
-            po_number=po.po_number,
-            preview=f"record fabric ordered for {po.po_number}, {meters} meters from {mill_name}, ordered today",
-            payload={"meters": str(meters), "mill_name": mill_name},
+            po_number=po.po_number if po is not None else "__missing_po__",
+            preview="",
+            payload={"meters": str(meters) if meters is not None else None, "mill_name": mill_name if mill_name else None},
+            original_instruction=raw_text,
         )
+        _refresh_missing_fields(pending)
+        if not pending.missing_fields:
+            pending.preview = _build_preview(pending)
+        return pending
 
     if is_fabric_received:
         meters = _extract_meters(normalized)
-        if meters is None:
-            return DirectAssistantAnswer(f"How many meters were received for {po.po_number}?")
-        mill_name = _extract_mill_name(raw_text) or "Voice Fabric Receipt"
-        return PendingVoiceWrite(
+        mill_name = _extract_mill_name(raw_text)
+        pending = PendingVoiceWrite(
             action_type="fabric_received",
-            po_number=po.po_number,
-            preview=f"record fabric received for {po.po_number}, {meters} meters from {mill_name}, received today",
-            payload={"meters": str(meters), "mill_name": mill_name},
+            po_number=po.po_number if po is not None else "__missing_po__",
+            preview="",
+            payload={"meters": str(meters) if meters is not None else None, "mill_name": mill_name},
+            original_instruction=raw_text,
         )
+        _refresh_missing_fields(pending)
+        if not pending.missing_fields:
+            pending.preview = _build_preview(pending)
+        return pending
 
     if is_stage_update and stage is not None:
+        if po is None:
+            return DirectAssistantAnswer("Please tell me the PO number before I update the stage.")
         return PendingVoiceWrite(
             action_type="stage_update",
             po_number=po.po_number,
@@ -257,6 +460,215 @@ def _parse_voice_write(pos: list[PurchaseOrder], raw_text: str, normalized: str)
             payload={"stage": stage.value},
         )
     return None
+
+
+def _parse_dispatch_without_quantity(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not any(token in normalized for token in ("went for dispatch", "gone for dispatch", "dispatch mein", "dispatch me", "dispatch chala", "for dispatch")):
+        return None
+    po = _extract_po(pos, raw_text)
+    if po is None:
+        return DirectAssistantAnswer("Which PO went for dispatch?")
+    ready = _dispatch_ready_qty(po)
+    if ready <= 0:
+        return DirectAssistantAnswer(f"{po.po_number} does not show any dispatch-ready pieces. How many pieces were dispatched?")
+    return PendingVoiceWrite(
+        action_type="dispatch_pieces",
+        po_number=po.po_number,
+        preview=f"dispatch {ready} pieces for {po.po_number} today",
+        payload={"pieces": ready},
+        original_instruction=raw_text,
+    )
+
+
+def _parse_completion_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not any(token in normalized for token in ("complete", "completed", "ho gayi", "ho gaya", "done")):
+        return None
+    stage = _stage_from_text(normalized)
+    if stage not in {StageName.cutting, StageName.packing}:
+        return None
+    po = _extract_po(pos, raw_text)
+    if po is None:
+        return DirectAssistantAnswer(f"Which PO is {stage.value.replace('_', ' ')} completed for?")
+    pieces = _extract_pieces(normalized)
+    if pieces is None:
+        summary = next((row for row in po.stage_summaries if row.stage == stage), None)
+        pieces = int(summary.pending_qty if summary and summary.pending_qty > 0 else po.order_quantity_pcs)
+    pending = PendingVoiceWrite(
+        action_type="complete_stage",
+        po_number=po.po_number,
+        preview="",
+        payload={"stage": stage.value, "pieces": int(pieces)},
+        original_instruction=raw_text,
+    )
+    _refresh_missing_fields(pending)
+    if not pending.missing_fields:
+        pending.preview = _build_preview(pending)
+    return pending
+
+
+def _extract_contractor_name(raw_text: str) -> str | None:
+    cleaned = raw_text.strip()
+    patterns = (
+        r"\bto\s+([A-Za-z][A-Za-z0-9 .&'-]{1,80}?)(?:\s+(?:stitching|contractor|factor|factors))?(?:[.,]|$)",
+        r"\bko\s+([A-Za-z][A-Za-z0-9 .&'-]{1,80}?)(?:\s+(?:stitching|contractor|factor|factors))?(?:[.,]|$)",
+        r"\b([A-Za-z][A-Za-z0-9 .&'-]{1,80}?\s+(?:contractor|factors|factor))\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            name = re.sub(r"\s+", " ", match.group(1)).strip(" .,-")
+            name = re.sub(r"\b(stitching|contractor)\b", "", name, flags=re.IGNORECASE).strip(" .,-")
+            return name or None
+    return None
+
+
+def _parse_stitching_assignment(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if "stitch" not in normalized and "silai" not in normalized:
+        return None
+    if not any(token in normalized for token in ("send", "bhej", "bhejo", "assign", "allocate", "to ")):
+        return None
+    po = _extract_po(pos, raw_text)
+    pieces = _extract_pieces(normalized)
+    contractor_name = _extract_contractor_name(raw_text)
+    pending = PendingVoiceWrite(
+        action_type="assign_to_stitching",
+        po_number=po.po_number if po is not None else "__missing_po__",
+        preview="",
+        payload={"pieces": pieces, "contractor_name": contractor_name},
+        original_instruction=raw_text,
+    )
+    _refresh_missing_fields(pending)
+    if not pending.missing_fields:
+        pending.preview = _build_preview(pending)
+    return pending
+
+
+def _extract_quantity_before_word(normalized: str, aliases: Iterable[str]) -> int | None:
+    for alias in aliases:
+        pattern = rf"\b(\d[\d,]*)\s*(?:pcs|piece|pieces)?\s+(?:in\s+)?{re.escape(alias)}\b"
+        match = re.search(pattern, normalized)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    for alias in aliases:
+        pattern = rf"\b{re.escape(alias)}\s+(?:is\s+|mein\s+|me\s+)?(\d[\d,]*)\b"
+        match = re.search(pattern, normalized)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
+def _parse_quality_quantity_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not any(token in normalized for token in ("repair", "alteration", "alter ", "rejected", "reject")):
+        return None
+    repair = _extract_quantity_before_word(normalized, ("repair",))
+    alter = _extract_quantity_before_word(normalized, ("alteration", "alter"))
+    rejected = _extract_quantity_before_word(normalized, ("rejected", "reject"))
+    if not any((repair, alter, rejected)):
+        return None
+    po = _extract_po(pos, raw_text)
+    pending = PendingVoiceWrite(
+        action_type="quality_quantities",
+        po_number=po.po_number if po is not None else "__missing_po__",
+        preview="",
+        payload={
+            "repair_pieces": int(repair or 0),
+            "alteration_pieces": int(alter or 0),
+            "rejected_pieces": int(rejected or 0),
+        },
+        original_instruction=raw_text,
+    )
+    _refresh_missing_fields(pending)
+    if not pending.missing_fields:
+        pending.preview = _build_preview(pending)
+    return pending
+
+
+def _extract_date(raw_text: str, normalized: str) -> date | None:
+    today = date.today()
+    if "today" in normalized or "aaj" in normalized:
+        return today
+    if "tomorrow" in normalized or "kal" in normalized:
+        return today + timedelta(days=1)
+
+    iso = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", normalized)
+    if iso:
+        try:
+            return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
+
+    months = {
+        "jan": 1, "january": 1,
+        "feb": 2, "february": 2,
+        "mar": 3, "march": 3,
+        "apr": 4, "april": 4,
+        "may": 5,
+        "jun": 6, "june": 6,
+        "jul": 7, "july": 7,
+        "aug": 8, "august": 8,
+        "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10,
+        "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+    day_month = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(20\d{2}))?\b", raw_text, flags=re.IGNORECASE)
+    if day_month:
+        month = months.get(day_month.group(2).lower())
+        if month:
+            try:
+                return date(int(day_month.group(3) or today.year), month, int(day_month.group(1)))
+            except ValueError:
+                return None
+    month_day = re.search(r"\b([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(20\d{2}))?\b", raw_text, flags=re.IGNORECASE)
+    if month_day:
+        month = months.get(month_day.group(1).lower())
+        if month:
+            try:
+                return date(int(month_day.group(3) or today.year), month, int(month_day.group(2)))
+            except ValueError:
+                return None
+    return None
+
+
+def _parse_delivery_date_update(
+    pos: list[PurchaseOrder],
+    raw_text: str,
+    normalized: str,
+    explicit_write: bool,
+) -> PendingVoiceWrite | DirectAssistantAnswer | None:
+    if not explicit_write and "date" not in normalized:
+        return None
+    if not any(token in normalized for token in ("date", "shipment", "delivery")):
+        return None
+    parsed = _extract_date(raw_text, normalized)
+    po = _extract_po(pos, raw_text)
+    pending = PendingVoiceWrite(
+        action_type="update_delivery_date",
+        po_number=po.po_number if po is not None else "__missing_po__",
+        preview="",
+        payload={"date": parsed.isoformat() if parsed else None},
+        original_instruction=raw_text,
+    )
+    _refresh_missing_fields(pending)
+    if not pending.missing_fields:
+        pending.preview = _build_preview(pending)
+    return pending
 
 
 async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -> str:
@@ -277,6 +689,16 @@ async def _execute_pending_write(db: AsyncSession, pending: PendingVoiceWrite) -
         return await _execute_dispatch_pieces(db, po, pending)
     if pending.action_type == "po_status_update":
         return await _execute_po_status_update(db, po, pending)
+    if pending.action_type == "mark_completed":
+        return await _execute_mark_completed(db, po, pending)
+    if pending.action_type == "complete_stage":
+        return await _execute_complete_stage(db, po, pending)
+    if pending.action_type == "assign_to_stitching":
+        return await _execute_assign_to_stitching(db, po, pending)
+    if pending.action_type == "quality_quantities":
+        return await _execute_quality_quantities(db, po, pending)
+    if pending.action_type == "update_delivery_date":
+        return await _execute_update_delivery_date(db, po, pending)
     return "I could not understand the pending update, so nothing was changed."
 
 
@@ -596,6 +1018,15 @@ def _parse_po_status_update(
     if len(matches) > 1:
         preview = ", ".join(po.po_number for po in matches[:5])
         return DirectAssistantAnswer(f"I found {len(matches)} matching POs: {preview}. Which exact PO should I update?")
+    if status == POStatus.completed:
+        pending_qty = _pending_qty(matches[0])
+        warning = f"{pending_qty} pieces may still be pending" if pending_qty > 0 else None
+        return PendingVoiceWrite(
+            action_type="mark_completed",
+            po_number=matches[0].po_number,
+            preview="",
+            payload={"warning": warning},
+        )
     return PendingVoiceWrite(
         action_type="po_status_update",
         po_number=matches[0].po_number,
@@ -922,6 +1353,192 @@ async def _execute_dispatch_pieces(db: AsyncSession, po: PurchaseOrder, pending:
     )
 
 
+async def _execute_mark_completed(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    old_status = po.status.value
+    summary = await get_dispatch_summary(db, po.id)
+    pending_qty = int(summary.pending_dispatch)
+    warning = pending.payload.get("warning")
+    po.status = POStatus.completed if pending_qty == 0 else POStatus.dispatched_with_exception
+    po.actual_delivery_date = date.today()
+    await log_audit_event(
+        db,
+        action_type="voice_mark_po_completed",
+        purchase_order_id=po.id,
+        entity_type="purchase_order",
+        entity_id=str(po.id),
+        old_value_json={"status": old_status, "actual_delivery_date": _json_safe_value(po.actual_delivery_date)},
+        new_value_json={"status": po.status.value, "pending_dispatch": pending_qty, "warning": warning},
+        remarks="Confirmed voice command.",
+    )
+    await db.commit()
+    if pending_qty > 0:
+        return f"Updated {po.po_number}. It is marked dispatched with exception because {pending_qty} pieces are still pending."
+    return f"Done. {po.po_number} is marked completed."
+
+
+async def _execute_complete_stage(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    stage = StageName(str(pending.payload["stage"]))
+    pieces = int(pending.payload["pieces"])
+    if pieces <= 0:
+        return "Quantity must be greater than zero, so nothing was updated."
+    stage_summary = await _stage_summary(db, po, stage)
+    if stage_summary is None:
+        await ensure_po_operational_data(db, po, commit=False)
+        stage_summary = await _stage_summary(db, po, stage)
+    if stage_summary is None:
+        return f"I could not find the {stage.value.replace('_', ' ')} stage for {po.po_number}."
+    if stage_summary.input_qty <= 0:
+        stage_summary.input_qty = int(po.order_quantity_pcs)
+        stage_summary.pending_qty = int(po.order_quantity_pcs)
+        stage_summary.status = StageStatus.in_progress
+        await db.flush()
+    available = max(int(stage_summary.pending_qty), 0)
+    if pieces > available:
+        return f"I could not update {po.po_number}. Only {available} pieces are pending in {stage.value.replace('_', ' ')}."
+    try:
+        await record_stage_progress(
+            db,
+            StageProgressCreate(
+                purchase_order_id=po.id,
+                stage=stage,
+                entry_date=date.today(),
+                completed_today=pieces,
+                approved_today=pieces,
+                rejected_today=0,
+                repair_today=0,
+                alter_today=0,
+                moved_to_next_stage_today=pieces,
+                remarks="Created from confirmed voice command.",
+            ),
+            actor_id=None,
+            actor_role=None,
+        )
+    except DomainError as error:
+        await db.rollback()
+        return f"I could not update {po.po_number}: {error.detail}"
+    return f"Done. {stage.value.replace('_', ' ').title()} for {po.po_number} is marked complete for {pieces} pieces."
+
+
+async def _execute_assign_to_stitching(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    pieces = int(pending.payload["pieces"])
+    contractor_name = str(pending.payload["contractor_name"]).strip()
+    if pieces <= 0:
+        return "Quantity must be greater than zero, so nothing was updated."
+    result = await db.execute(
+        select(Contractor)
+        .where(
+            Contractor.is_active.is_(True),
+            Contractor.contractor_type == ContractorType.stitching,
+            Contractor.name.ilike(f"%{contractor_name}%"),
+        )
+        .order_by(Contractor.name.asc())
+    )
+    contractor = result.scalars().first()
+    if contractor is None:
+        return f"I could not find an active stitching contractor matching {contractor_name}."
+    stitching = await _stage_summary(db, po, StageName.stitching)
+    if stitching is None:
+        await ensure_po_operational_data(db, po, commit=False)
+        stitching = await _stage_summary(db, po, StageName.stitching)
+    if stitching is None:
+        return f"I could not find stitching stage for {po.po_number}."
+    if stitching.input_qty <= 0:
+        cutting = await _stage_summary(db, po, StageName.cutting)
+        available_cut = int(cutting.moved_to_next_qty if cutting else 0)
+        if available_cut < pieces:
+            return f"I could not assign stitching. Only {available_cut} cut pieces are ready for {po.po_number}."
+        stitching.input_qty = available_cut
+        stitching.pending_qty = available_cut
+        stitching.status = StageStatus.in_progress
+        await db.flush()
+    try:
+        await allocate_contractor(
+            db,
+            ContractorAllocationCreate(
+                stage_summary_id=stitching.id,
+                contractor_id=contractor.id,
+                issued_qty=pieces,
+                expected_completion_date=None,
+                notes="Created from confirmed voice command.",
+            ),
+            actor_id=None,
+            actor_role=None,
+        )
+    except DomainError as error:
+        await db.rollback()
+        return f"I could not assign stitching for {po.po_number}: {error.detail}"
+    return f"Done. {pieces} pieces of {po.po_number} are assigned to {contractor.name} for stitching."
+
+
+async def _execute_quality_quantities(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    repair = int(pending.payload.get("repair_pieces") or 0)
+    alter = int(pending.payload.get("alteration_pieces") or 0)
+    rejected = int(pending.payload.get("rejected_pieces") or 0)
+    total = repair + alter + rejected
+    if total <= 0:
+        return "No repair, alteration, or rejected pieces were found, so nothing was updated."
+    stage = await _stage_summary(db, po, StageName.stitching)
+    if stage is None:
+        await ensure_po_operational_data(db, po, commit=False)
+        stage = await _stage_summary(db, po, StageName.stitching)
+    if stage is None:
+        return f"I could not find stitching stage for {po.po_number}."
+    if stage.input_qty <= 0:
+        stage.input_qty = int(po.order_quantity_pcs)
+        stage.pending_qty = int(po.order_quantity_pcs)
+        stage.status = StageStatus.in_progress
+        await db.flush()
+    if total > int(stage.pending_qty):
+        return f"I could not record this. Only {stage.pending_qty} pieces are pending in stitching for {po.po_number}."
+    try:
+        await record_stage_progress(
+            db,
+            StageProgressCreate(
+                purchase_order_id=po.id,
+                stage=StageName.stitching,
+                entry_date=date.today(),
+                completed_today=total,
+                approved_today=0,
+                rejected_today=rejected,
+                repair_today=repair,
+                alter_today=alter,
+                moved_to_next_stage_today=0,
+                remarks="Created from confirmed voice command.",
+            ),
+            actor_id=None,
+            actor_role=None,
+        )
+    except DomainError as error:
+        await db.rollback()
+        return f"I could not record quality quantities for {po.po_number}: {error.detail}"
+    parts = []
+    if repair:
+        parts.append(f"{repair} repair")
+    if alter:
+        parts.append(f"{alter} alteration")
+    if rejected:
+        parts.append(f"{rejected} rejected")
+    return f"Done. {po.po_number} now has {', '.join(parts)} pieces recorded."
+
+
+async def _execute_update_delivery_date(db: AsyncSession, po: PurchaseOrder, pending: PendingVoiceWrite) -> str:
+    new_date = date.fromisoformat(str(pending.payload["date"]))
+    old_date = po.promise_delivery_date
+    po.promise_delivery_date = new_date
+    await log_audit_event(
+        db,
+        action_type="voice_update_delivery_date",
+        purchase_order_id=po.id,
+        entity_type="purchase_order",
+        entity_id=str(po.id),
+        old_value_json={"promise_delivery_date": _json_safe_value(old_date)},
+        new_value_json={"promise_delivery_date": new_date.isoformat()},
+        remarks="Confirmed voice command.",
+    )
+    await db.commit()
+    return f"Done. Shipment date for {po.po_number} is now {new_date.isoformat()}."
+
+
 async def _line_for_po(db: AsyncSession, po: PurchaseOrder) -> ProductFabricLine | None:
     result = await db.execute(select(ProductFabricLine).where(ProductFabricLine.product_id == po.product_id))
     return result.scalars().first()
@@ -1016,23 +1633,10 @@ def _extract_meters(normalized: str) -> Decimal | None:
 
 
 def _mentions_packing_material(normalized: str) -> bool:
-    return any(
-        token in normalized
-        for token in (
-            "packing material",
-            "packing materials",
-            "polybag",
-            "packet",
-            "tag",
-            "header",
-            "label",
-            "insert",
-            "stiffener",
-            "bag",
-            "carton",
-            "bale",
-            "tape",
-        )
+    phrase_tokens = ("packing material", "packing materials", "insert card")
+    word_tokens = ("polybag", "packet", "tag", "header", "label", "insert", "stiffener", "bag", "carton", "bale", "tape")
+    return any(token in normalized for token in phrase_tokens) or any(
+        re.search(rf"\b{re.escape(token)}\b", normalized) for token in word_tokens
     )
 
 

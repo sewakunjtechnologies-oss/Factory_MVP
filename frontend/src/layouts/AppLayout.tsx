@@ -1,6 +1,7 @@
 import {
   Bell,
   Bot,
+  Boxes,
   ClipboardList,
   Factory,
   Layers,
@@ -63,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     heading: "Finish",
     items: [
+      { to: "/packing-materials", label: "Packing materials", icon: Boxes, description: "Stock" },
       { to: "/packing", label: "Packing planner", icon: PackageCheck, description: "Step 8" },
       { to: "/dispatch", label: "Dispatch", icon: Truck, description: "Step 9" },
     ],

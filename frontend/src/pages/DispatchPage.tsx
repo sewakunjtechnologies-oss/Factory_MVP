@@ -1,10 +1,10 @@
 import { Fragment, type Dispatch, type FormEvent, type SetStateAction, useMemo, useState } from "react";
-import { CheckCircle2, Send, Truck } from "lucide-react";
+import { CheckCircle2, Pencil, Send, Trash2, Truck, X } from "lucide-react";
 
 import { getApiErrorMessage } from "../api/axios";
 import { DispatchPlannerCard } from "../components/DispatchPlannerCard";
 import { LoadingState } from "../components/LoadingState";
-import { useAllDispatchLoads, useCreateDispatchLoad } from "../hooks/useDispatch";
+import { useAllDispatchLoads, useCreateDispatchLoad, useDeleteDispatchLoad, useUpdateDispatchLoad } from "../hooks/useDispatch";
 import { usePurchaseOrders } from "../hooks/usePurchaseOrders";
 import type { DispatchCostType, DispatchLoadRead, PurchaseOrderRead } from "../types/api";
 import type { DispatchFormValues } from "../types/forms";
@@ -50,8 +50,11 @@ const vehicleLengthOptions = [
 export default function DispatchPage() {
   const purchaseOrdersQuery = usePurchaseOrders();
   const [values, setValues] = useState<DispatchFormValues>(emptyForm);
+  const [editingLoad, setEditingLoad] = useState<DispatchLoadRead | null>(null);
   const dispatchQueries = useAllDispatchLoads(purchaseOrdersQuery.data);
   const createDispatchMutation = useCreateDispatchLoad();
+  const updateDispatchMutation = useUpdateDispatchLoad();
+  const deleteDispatchMutation = useDeleteDispatchLoad();
 
   const purchaseOrders = useMemo(() => purchaseOrdersQuery.data ?? [], [purchaseOrdersQuery.data]);
   const allLoads = useMemo(
@@ -63,7 +66,9 @@ export default function DispatchPage() {
   const shippedForSelected = allLoads
     .filter((load) => load.purchase_order_id === values.purchase_order_id)
     .reduce((sum, load) => sum + load.shipped_qty, 0);
-  const availableToShip = Math.max(packedQty - shippedForSelected, 0);
+  const editingQtyCredit =
+    editingLoad && editingLoad.purchase_order_id === values.purchase_order_id ? editingLoad.shipped_qty : 0;
+  const availableToShip = Math.max(packedQty - shippedForSelected + editingQtyCredit, 0);
   const totals = getLoadTotals(allLoads);
   const poById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po])), [purchaseOrders]);
   const poNumberById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po.po_number])), [purchaseOrders]);
@@ -86,9 +91,39 @@ export default function DispatchPage() {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (editingLoad) {
+      const updatePayload = { ...buildDispatchPayload(values) };
+      delete (updatePayload as Partial<typeof updatePayload>).purchase_order_id;
+      updateDispatchMutation.mutate(
+        { id: editingLoad.id, purchaseOrderId: editingLoad.purchase_order_id, payload: updatePayload },
+        {
+          onSuccess: () => {
+            setEditingLoad(null);
+            setValues((current) => ({ ...emptyForm, purchase_order_id: current.purchase_order_id, shipped_at: todayISO() }));
+          },
+        },
+      );
+      return;
+    }
     createDispatchMutation.mutate(buildDispatchPayload(values), {
       onSuccess: () => setValues((current) => ({ ...emptyForm, purchase_order_id: current.purchase_order_id, shipped_at: todayISO() })),
     });
+  }
+
+  function startEditLoad(load: DispatchLoadRead) {
+    setEditingLoad(load);
+    setValues(loadToFormValues(load));
+  }
+
+  function cancelEditLoad() {
+    setEditingLoad(null);
+    setValues({ ...emptyForm, shipped_at: todayISO() });
+  }
+
+  function removeLoad(load: DispatchLoadRead) {
+    const ok = window.confirm(`Delete dispatch load ${load.load_number}? This will recalculate remaining pieces.`);
+    if (!ok) return;
+    deleteDispatchMutation.mutate({ id: load.id, purchaseOrderId: load.purchase_order_id });
   }
 
   return (
@@ -101,9 +136,21 @@ export default function DispatchPage() {
           <Truck className="h-5 w-5 text-teal-700" aria-hidden="true" />
           <div>
             <h1 className="text-xl font-bold text-slate-950">Dispatch Load</h1>
-            <p className="text-sm text-slate-500">Create partial shipments and track cost per piece.</p>
+            <p className="text-sm text-slate-500">Create or edit partial shipments; remaining pieces recalculate automatically.</p>
           </div>
         </div>
+
+        {editingLoad ? (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <span>
+              Editing load <span className="font-semibold">{editingLoad.load_number}</span>. Save to recalculate remaining pieces.
+            </span>
+            <button type="button" className="chip-button bg-white" onClick={cancelEditLoad}>
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              Cancel
+            </button>
+          </div>
+        ) : null}
 
         <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
           <div className="grid grid-cols-3 gap-2 sm:gap-3">
@@ -124,6 +171,7 @@ export default function DispatchPage() {
               value={values.purchase_order_id}
               onChange={(event) => setValues((current) => ({ ...current, purchase_order_id: event.target.value }))}
               required
+              disabled={Boolean(editingLoad)}
             >
               <option value="">Select PO</option>
               {purchaseOrderGroups.map((group) => (
@@ -236,15 +284,15 @@ export default function DispatchPage() {
             </div>
           ) : null}
 
-          {createDispatchMutation.isError ? (
+          {createDispatchMutation.isError || updateDispatchMutation.isError || deleteDispatchMutation.isError ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {getApiErrorMessage(createDispatchMutation.error)}
+              {getApiErrorMessage(createDispatchMutation.error ?? updateDispatchMutation.error ?? deleteDispatchMutation.error)}
             </div>
           ) : null}
-          {createDispatchMutation.isSuccess ? (
+          {createDispatchMutation.isSuccess || updateDispatchMutation.isSuccess || deleteDispatchMutation.isSuccess ? (
             <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              Dispatch load saved.
+              Dispatch load saved. Remaining pieces recalculated.
             </div>
           ) : null}
 
@@ -254,9 +302,13 @@ export default function DispatchPage() {
             </div>
           ) : null}
 
-          <button type="submit" className="primary-button w-full" disabled={createDispatchMutation.isPending || quantityInvalid}>
+          <button type="submit" className="primary-button w-full" disabled={createDispatchMutation.isPending || updateDispatchMutation.isPending || quantityInvalid}>
             <Send className="h-4 w-4" aria-hidden="true" />
-            {createDispatchMutation.isPending ? "Creating Load" : "Create Dispatch Load"}
+            {createDispatchMutation.isPending || updateDispatchMutation.isPending
+              ? "Saving Load"
+              : editingLoad
+                ? "Save Dispatch Load"
+                : "Create Dispatch Load"}
           </button>
         </form>
       </section>
@@ -292,12 +344,13 @@ export default function DispatchPage() {
                   <th className="px-4 py-3">Cost</th>
                   <th className="px-4 py-3">Cost/Pc</th>
                   <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {allLoads.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={11} className="px-4 py-8 text-center text-slate-500">
                       No dispatch loads yet.
                     </td>
                   </tr>
@@ -305,7 +358,7 @@ export default function DispatchPage() {
                   loadGroups.map((group) => (
                     <Fragment key={group.key}>
                       <tr>
-                        <td colSpan={10} className="bg-teal-50 px-4 py-2 text-xs font-extrabold uppercase tracking-wide text-teal-900">
+                        <td colSpan={11} className="bg-teal-50 px-4 py-2 text-xs font-extrabold uppercase tracking-wide text-teal-900">
                           {group.label} · {formatNumber(group.rows.length)} load{group.rows.length === 1 ? "" : "s"}
                         </td>
                       </tr>
@@ -335,6 +388,30 @@ export default function DispatchPage() {
                             <td className="px-4 py-3 text-slate-600">{formatCurrency(load.dispatch_cost)}</td>
                             <td className="px-4 py-3 text-slate-600">{formatCurrency(load.cost_per_piece)}</td>
                             <td className="px-4 py-3 text-slate-600">{formatDate(load.shipped_at)}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  type="button"
+                                  className="chip-button"
+                                  onClick={() => startEditLoad(load)}
+                                  disabled={updateDispatchMutation.isPending || deleteDispatchMutation.isPending}
+                                  aria-label={`Edit dispatch load ${load.load_number}`}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="chip-button text-red-700"
+                                  onClick={() => removeLoad(load)}
+                                  disabled={updateDispatchMutation.isPending || deleteDispatchMutation.isPending}
+                                  aria-label={`Delete dispatch load ${load.load_number}`}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         );
                       })}
@@ -458,6 +535,34 @@ function costTypeLabel(costType: DispatchCostType): string {
     vehicle_capacity: "Vehicle Cap.",
   };
   return labels[costType];
+}
+
+function loadToFormValues(load: DispatchLoadRead): DispatchFormValues {
+  return {
+    purchase_order_id: load.purchase_order_id,
+    load_number: load.load_number,
+    shipped_qty: String(load.shipped_qty),
+    vehicle_type: load.vehicle_type ?? "",
+    vehicle_identifier: load.vehicle_identifier ?? "",
+    expected_piece_capacity: load.expected_piece_capacity == null ? "" : String(load.expected_piece_capacity),
+    actual_loaded_pieces: load.actual_loaded_pieces == null ? "" : String(load.actual_loaded_pieces),
+    cbm_capacity: load.cbm_capacity ?? "",
+    cbm_used: load.cbm_used ?? "",
+    cost_type: load.cost_type,
+    invoice_value: load.invoice_value ?? "",
+    dispatch_percent: load.dispatch_percent ?? "",
+    cbm_value: load.cbm_value ?? "",
+    cbm_rate: load.cbm_rate ?? "",
+    manual_cost: load.manual_cost ?? "",
+    vehicle_cost: load.vehicle_cost ?? "",
+    shipped_at: load.shipped_at,
+    transporter_name: load.transporter_name ?? "",
+    destination: load.destination ?? "",
+    tracking_reference: load.tracking_reference ?? "",
+    linked_repair_qty: String(load.linked_repair_qty ?? 0),
+    linked_alteration_qty: String(load.linked_alteration_qty ?? 0),
+    shortfall_reason: load.shortfall_reason ?? "",
+  };
 }
 
 function Metric({ label, value, strong }: { label: string; value: string; strong?: boolean }) {

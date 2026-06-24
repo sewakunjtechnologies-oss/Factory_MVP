@@ -269,6 +269,12 @@ export interface DispatchLoadRead {
   transporter_name: string | null;
   destination: string | null;
   tracking_reference: string | null;
+  document_status: string | null;
+  invoice_uploaded: boolean;
+  packing_list_uploaded: boolean;
+  eway_bill_uploaded: boolean;
+  transporter_confirmation: boolean;
+  buyer_dispatch_approval: boolean;
   shortfall_qty: number;
   shortfall_reason: string | null;
   linked_repair_qty: number;
@@ -297,6 +303,37 @@ export interface DispatchLoadCreate {
   transporter_name?: string | null;
   destination?: string | null;
   tracking_reference?: string | null;
+  shortfall_reason?: string | null;
+  linked_repair_qty?: number;
+  linked_alteration_qty?: number;
+}
+
+export interface DispatchLoadUpdate {
+  load_number?: string;
+  shipped_qty?: number;
+  vehicle_type?: string | null;
+  vehicle_identifier?: string | null;
+  expected_piece_capacity?: number | null;
+  actual_loaded_pieces?: number | null;
+  cbm_capacity?: number | null;
+  cbm_used?: number | null;
+  cost_type?: DispatchCostType;
+  invoice_value?: number | null;
+  dispatch_percent?: number | null;
+  cbm_value?: number | null;
+  cbm_rate?: number | null;
+  manual_cost?: number | null;
+  vehicle_cost?: number | null;
+  shipped_at?: string;
+  transporter_name?: string | null;
+  destination?: string | null;
+  tracking_reference?: string | null;
+  document_status?: string | null;
+  invoice_uploaded?: boolean;
+  packing_list_uploaded?: boolean;
+  eway_bill_uploaded?: boolean;
+  transporter_confirmation?: boolean;
+  buyer_dispatch_approval?: boolean;
   shortfall_reason?: string | null;
   linked_repair_qty?: number;
   linked_alteration_qty?: number;
@@ -700,4 +737,91 @@ export interface DispatchSummaryRead {
   total_dispatch_cost: string;
   average_cost_per_piece: string;
   loads: DispatchLoadRead[];
+}
+
+export type PackingMaterialStatus = "in_stock" | "ordered" | "received" | "shortage" | "consumed" | "unknown";
+
+export interface PackingMaterialRead {
+  id: UUID;
+  purchase_order_id: UUID | null;
+  po_number: string | null;
+  category_name: string;
+  material_name: string;
+  material_type: string;
+  unit: string;
+  required_qty: string;
+  in_stock_qty: string;
+  ordered_qty: string;
+  received_qty: string;
+  consumed_qty: string;
+  printed_consumption_qty: string;
+  actual_consumption_qty: string;
+  printed_stock_qty: string;
+  actual_stock_qty: string;
+  shortage_qty: string;
+  status: PackingMaterialStatus;
+  supplier_name: string | null;
+  expected_delivery_date: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PackingMaterialCreate {
+  purchase_order_id?: UUID | null;
+  po_number?: string | null;
+  category_name: string;
+  material_name: string;
+  material_type?: string;
+  unit?: string;
+  required_qty?: number;
+  in_stock_qty?: number;
+  ordered_qty?: number;
+  received_qty?: number;
+  consumed_qty?: number;
+  printed_consumption_qty?: number;
+  actual_consumption_qty?: number;
+  printed_stock_qty?: number;
+  actual_stock_qty?: number;
+  shortage_qty?: number;
+  status?: PackingMaterialStatus;
+  supplier_name?: string | null;
+  expected_delivery_date?: string | null;
+  notes?: string | null;
+}
+
+export interface PackingMaterialUpdate {
+  purchase_order_id?: UUID | null;
+  po_number?: string | null;
+  category_name?: string;
+  material_name?: string;
+  material_type?: string;
+  unit?: string;
+  required_qty?: number;
+  in_stock_qty?: number;
+  ordered_qty?: number;
+  received_qty?: number;
+  consumed_qty?: number;
+  printed_consumption_qty?: number;
+  actual_consumption_qty?: number;
+  printed_stock_qty?: number;
+  actual_stock_qty?: number;
+  shortage_qty?: number;
+  status?: PackingMaterialStatus;
+  supplier_name?: string | null;
+  expected_delivery_date?: string | null;
+  notes?: string | null;
+}
+
+export interface PackingMaterialBackfillSummary {
+  rows_created: number;
+  rows_updated: number;
+  purchase_orders_scanned: number;
+}
+
+export interface PackingMaterialCategoryDemand {
+  category: string;
+  order_count: number;
+  total_pieces: number;
+  material_rule: string;
 }

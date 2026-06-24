@@ -31,8 +31,7 @@ export function POEditDialog({ po, onClose, onSaved }: { po: PurchaseOrderRead; 
   const [actualDate, setActualDate] = useState(po.actual_delivery_date ?? "");
   const [status, setStatus] = useState<string>(po.status);
   const [notes, setNotes] = useState(po.notes ?? "");
-  const [designName, setDesignName] = useState(po.design_name_snapshot ?? "");
-  const [designCode, setDesignCode] = useState(po.design_code_snapshot ?? "");
+  const [productFabricCategory, setProductFabricCategory] = useState(po.design_code_snapshot ?? po.design_name_snapshot ?? "");
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -48,8 +47,8 @@ export function POEditDialog({ po, onClose, onSaved }: { po: PurchaseOrderRead; 
       actual_delivery_date: actualDate || null,
       status,
       notes: notes.trim() || null,
-      design_name_snapshot: designName.trim() || null,
-      design_code_snapshot: designCode.trim() || null,
+      design_name_snapshot: productFabricCategory.trim() || null,
+      design_code_snapshot: productFabricCategory.trim() || null,
     };
     try {
       await update.mutateAsync({ id: po.id, payload });
@@ -84,8 +83,7 @@ export function POEditDialog({ po, onClose, onSaved }: { po: PurchaseOrderRead; 
             <Field id="actual_date" label="Actual delivery (if done)" value={actualDate} onChange={setActualDate} type="date" />
             <Field id="selling" label="Selling price" value={String(sellingPrice)} onChange={(v) => setSellingPrice(v)} type="number" />
 
-            <Field id="design_code" label="Fabric code (links to inventory)" value={designCode} onChange={setDesignCode} maxLength={30} />
-            <Field id="design_name" label="Fabric display name" value={designName} onChange={setDesignName} maxLength={180} />
+            <Field id="product_fabric_category" label="Product / Fabric Category" value={productFabricCategory} onChange={setProductFabricCategory} maxLength={180} />
           </div>
 
           <div className="space-y-2">

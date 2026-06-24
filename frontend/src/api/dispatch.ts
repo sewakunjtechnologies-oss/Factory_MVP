@@ -1,5 +1,5 @@
 import { api } from "./axios";
-import type { DispatchLoadCreate, DispatchLoadRead, DispatchSummaryRead, UUID } from "../types/api";
+import type { DispatchLoadCreate, DispatchLoadRead, DispatchLoadUpdate, DispatchSummaryRead, UUID } from "../types/api";
 
 export async function fetchDispatchLoads(purchaseOrderId: UUID): Promise<DispatchLoadRead[]> {
   const response = await api.get<DispatchLoadRead[]>(`/dispatch/purchase-orders/${purchaseOrderId}`);
@@ -9,6 +9,15 @@ export async function fetchDispatchLoads(purchaseOrderId: UUID): Promise<Dispatc
 export async function createDispatchLoad(payload: DispatchLoadCreate): Promise<DispatchLoadRead> {
   const response = await api.post<DispatchLoadRead>("/dispatch", payload);
   return response.data;
+}
+
+export async function updateDispatchLoad(id: UUID, payload: DispatchLoadUpdate): Promise<DispatchLoadRead> {
+  const response = await api.patch<DispatchLoadRead>(`/dispatch/${id}`, payload);
+  return response.data;
+}
+
+export async function deleteDispatchLoad(id: UUID): Promise<void> {
+  await api.delete(`/dispatch/${id}`);
 }
 
 export async function fetchDispatchSummary(purchaseOrderId: UUID): Promise<DispatchSummaryRead> {

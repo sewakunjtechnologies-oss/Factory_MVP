@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getApiErrorMessage } from "../api/axios";
-import { askAssistant } from "../api/voice";
+import { askAssistant, type VoiceAskResponse } from "../api/voice";
 import { canUseNativeSpeech, recognizeWithNativeSpeech, speakWithNativeSpeech, stopNativeSpeech } from "../native/factorySpeech";
 import { useAssistantStore } from "../store/assistantStore";
 
@@ -55,8 +55,10 @@ interface UseVoiceStreamApi {
   state: VoiceStreamState;
   error: string | null;
   toolEvents: ToolEvent[];
+  latestResponse: VoiceAskResponse | null;
   startCall: () => Promise<void>;
   endCall: () => void;
+  stopCall: () => void;
 }
 
 const RECOGNITION_LANG = "en-IN";
@@ -92,6 +94,7 @@ export function useVoiceStream(): UseVoiceStreamApi {
   const [state, setState] = useState<VoiceStreamState>("ready");
   const [error, setError] = useState<string | null>(null);
   const [toolEvents] = useState<ToolEvent[]>([]);
+  const [latestResponse, setLatestResponse] = useState<VoiceAskResponse | null>(null);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const interimTranscriptRef = useRef("");
@@ -161,19 +164,24 @@ export function useVoiceStream(): UseVoiceStreamApi {
     lastSubmittedRef.current = text;
     askInFlightRef.current = true;
     setError(null);
+    setLatestResponse(null);
     setState("thinking");
     useAssistantStore.getState().appendTurn({ role: "user", text, artifacts: [] });
 
     try {
       const response = await askAssistant(text);
+      setLatestResponse(response);
       const answer = (response.answer ?? "").trim() || "I found the request, but there is no spoken answer available.";
       useAssistantStore.getState().appendTurn({
         role: "assistant",
         text: answer,
         artifacts: response.artifacts ?? [],
       });
-      setState("speaking");
-      await speak(answer);
+      const speechText = (response.speech_text ?? answer).trim();
+      if (speechText) {
+        setState("speaking");
+        await speak(speechText);
+      }
       setState("ready");
     } catch (err) {
       const message = getApiErrorMessage(err);
@@ -297,6 +305,17 @@ export function useVoiceStream(): UseVoiceStreamApi {
     stopRecognition(false);
   }, [stopRecognition]);
 
+  const stopCall = useCallback(() => {
+    shouldSubmitOnEndRef.current = false;
+    stopRecognition(true);
+    void stopNativeSpeech();
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    resetRecognitionRefs();
+    setState("ready");
+  }, [resetRecognitionRefs, stopRecognition]);
+
   useEffect(() => {
     return () => {
       shouldSubmitOnEndRef.current = false;
@@ -308,5 +327,5 @@ export function useVoiceStream(): UseVoiceStreamApi {
     };
   }, [stopRecognition]);
 
-  return { state, error, toolEvents, startCall, endCall };
+  return { state, error, toolEvents, latestResponse, startCall, endCall, stopCall };
 }

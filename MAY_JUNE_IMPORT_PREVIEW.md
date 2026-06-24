@@ -1,0 +1,122 @@
+# May/June Historical PO Import Preview
+
+This file previews the owner-provided May and June PO rows for the mobile historical import. These records are intended to be imported as editable historical dispatched POs only. They should not consume current fabric stock, create shortages, or create active mill requirements.
+
+## Summary
+
+| Month | Batch | Rows | Total Quantity |
+|---|---|---:|---:|
+| May 2026 | `OWNER_MAY_2026` | 19 | 84,632 |
+| June 2026 | `OWNER_JUNE_2026` | 37 | 200,902 |
+
+## Duplicate-Looking June Rows
+
+These rows are intentionally preserved as separate POs because duplicate-looking lines may represent separate order lots.
+
+| Category | Row Count |
+|---|---:|
+| `199-PACKEDWPC-MISTY-140X215-MC-TIR-6-25` | 2 |
+| `199-BLACK&WHITE-140X215-PL-TIR-10-25` | 2 |
+| `199-CHARCOAL-FOLK-140X215-PL-TIR-10-26` | 3 |
+| `299-SAGE-GRID-BOTANC-215X225-MC-TIR-6-26` | 2 |
+| `299-MODERN-GEO-215X225-MC-TIR-6-26` | 2 |
+| `299-VINTAGE-PAISLEY-215X225-MC-TIR-6-26` | 2 |
+| `299-MIDNIGHT-FLORA-215X225-MC-TIR-6-26` | 2 |
+| `499-FITTED-180X190-MC-TIR-S-26` | 2 |
+
+## Ambiguous Source Spellings
+
+Keep these values exactly unless the owner/admin corrects them before import:
+
+- `BOTANC`
+- `WHITEREALITY`
+- `GOLD STEAM` versus `GOLD-STEM`
+- `BLUGRN-FLORA`
+- `DMASK`
+- `PACKEDWPC`
+
+## May 2026 Rows
+
+| PO Number | Group | Category | Qty |
+|---|---|---|---:|
+| MAY-2026-001 | 109 MRP | ASSORTED | 8,000 |
+| MAY-2026-002 | 109 MRP | FROSTED-LEAF | 4,000 |
+| MAY-2026-003 | 109 MRP | RETRO-BLOCK | 5,000 |
+| MAY-2026-004 | 109 MRP | GARDEN-BLOOM | 4,000 |
+| MAY-2026-005 | 109 MRP | BEIGE-DMASK | 9,000 |
+| MAY-2026-006 | 109 MRP | MINI-FERN | 5,000 |
+| MAY-2026-007 | 109 MRP | BRN-BRICK | 5,140 |
+| MAY-2026-008 | 199-PKD | MISTY | 7,000 |
+| MAY-2026-009 | 199-PKD | TEAL | 4,000 |
+| MAY-2026-010 | 199-PKD | CHARCOAL | 5,000 |
+| MAY-2026-011 | 299 | SAGE-GRID | 1,002 |
+| MAY-2026-012 | 299 | EARTHY-ABSTRACT | 5,580 |
+| MAY-2026-013 | 299 | MODERN GEO | 3,000 |
+| MAY-2026-014 | 399 | JAIPURI | 5,110 |
+| MAY-2026-015 | 399 | GOLD STEAM | 2,000 |
+| MAY-2026-016 | 399 | MODERN STONE | 2,000 |
+| MAY-2026-017 | 499 | FITTED | 4,000 |
+| MAY-2026-018 | 499 | PREMIUM | 1,400 |
+| MAY-2026-019 | 499 | WHITE BEAUTY | 4,400 |
+
+## June 2026 Rows
+
+| PO Number | Category | Qty |
+|---|---|---:|
+| JUNE-2026-001 | 69-JAI MICRO-BLUE-50X75-TIR-12-26 | 6,996 |
+| JUNE-2026-002 | 69-JAI MICRO-WINE-50X75-TIR-12-26 | 6,996 |
+| JUNE-2026-003 | 69-JAI MICRO-GREY-50X75-TIR-12-26 | 6,996 |
+| JUNE-2026-004 | 69-MICRO-LIGHT FLORAL-50X75-TIR-12-26 | 14,004 |
+| JUNE-2026-005 | 69-MICRO-DARK FLORAL-50X75-TIR-12-26 | 20,004 |
+| JUNE-2026-006 | 99-PLR-300-BLK-STP-111X213-PL-TIR-10-26 | 7,000 |
+| JUNE-2026-007 | 109-BLUGRN-FLORA-140X215-PL-TIR-10-26 | 8,000 |
+| JUNE-2026-008 | 109-ORNG-HIBISCUS-140X215-PL-TIR-10-26 | 8,500 |
+| JUNE-2026-009 | 109-BRN-BRICK-140X215-PL-TIR-10-26 | 9,000 |
+| JUNE-2026-010 | 109-BEIGE-DMASK-140X215-PL-TIR-10-26 | 8,000 |
+| JUNE-2026-011 | 109-GARDEN-BLOOM-140X215-PL-TIR-10-26 | 5,000 |
+| JUNE-2026-012 | 199-KIDS-CARTOON-140X215-PL-TIR-10-26 | 800 |
+| JUNE-2026-013 | 199-PACKEDWPC-TEAL-140X215-MC-TIR-6-25 | 4,000 |
+| JUNE-2026-014 | 199-PACKEDWPC-MISTY-140X215-MC-TIR-6-25 | 4,500 |
+| JUNE-2026-015 | 199-PACKEDWPC-MISTY-140X215-MC-TIR-6-25 | 3,000 |
+| JUNE-2026-016 | 199-BLACK&WHITE-140X215-PL-TIR-10-25 | 8,000 |
+| JUNE-2026-017 | 199-BLACK&WHITE-140X215-PL-TIR-10-25 | 3,000 |
+| JUNE-2026-018 | 199-CHARCOAL-FOLK-140X215-PL-TIR-10-26 | 4,000 |
+| JUNE-2026-019 | 199-CHARCOAL-FOLK-140X215-PL-TIR-10-26 | 6,000 |
+| JUNE-2026-020 | 199-CHARCOAL-FOLK-140X215-PL-TIR-10-26 | 3,000 |
+| JUNE-2026-021 | 299-SAGE-GRID-BOTANC-215X225-MC-TIR-6-26 | 2,802 |
+| JUNE-2026-022 | 299-SAGE-GRID-BOTANC-215X225-MC-TIR-6-26 | 4,338 |
+| JUNE-2026-023 | 299-MODERN-GEO-215X225-MC-TIR-6-26 | 6,498 |
+| JUNE-2026-024 | 299-MODERN-GEO-215X225-MC-TIR-6-26 | 1,800 |
+| JUNE-2026-025 | 299-VINTAGE-PAISLEY-215X225-MC-TIR-6-26 | 1,998 |
+| JUNE-2026-026 | 299-VINTAGE-PAISLEY-215X225-MC-TIR-6-26 | 2,370 |
+| JUNE-2026-027 | 299-EARTHY-ABSTRACT-215X225-MC-TIR-6-26 | 4,002 |
+| JUNE-2026-028 | 299-MIDNIGHT-FLORA-215X225-MC-TIR-6-26 | 4,998 |
+| JUNE-2026-029 | 299-MIDNIGHT-FLORA-215X225-MC-TIR-6-26 | 1,800 |
+| JUNE-2026-030 | 399-MODERN-STONE-220X230-MC-TIR-05-26 | 3,000 |
+| JUNE-2026-031 | 399-GOLD-STEM-220X230-MC-TIR-05-26 | 8,000 |
+| JUNE-2026-032 | 399-JAIPURI-220X240-MC-TIR-05-26 | 7,000 |
+| JUNE-2026-033 | 499-PREMIUM-230X270-MC-TIR-S-26 | 2,000 |
+| JUNE-2026-034 | 499-FITTED-180X190-MC-TIR-S-26 | 1,000 |
+| JUNE-2026-035 | 499-FITTED-180X190-MC-TIR-S-26 | 3,000 |
+| JUNE-2026-036 | 499-SOLID-PRINT-EMB-230X265-MC-TIR-S-26 | 3,500 |
+| JUNE-2026-037 | 499-WHITEREALITY-230X274-MC-TIR-S-26 | 6,000 |
+
+## Commands
+
+Preview only:
+
+```bash
+backend/.venv/bin/python backend/seed/import_owner_may_june_historical_pos.py --preview
+```
+
+Apply after owner/admin review:
+
+```bash
+backend/.venv/bin/python backend/seed/import_owner_may_june_historical_pos.py --apply
+```
+
+Rollback one batch only:
+
+```bash
+backend/.venv/bin/python backend/seed/import_owner_may_june_historical_pos.py --rollback-batch OWNER_JUNE_2026
+```

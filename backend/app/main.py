@@ -21,6 +21,7 @@ from app.api.v1.routes import (
     fabric_orders,
     fabric_receipts,
     fabric_shortages,
+    mobile,
     packing,
     packing_materials,
     notifications,
@@ -108,6 +109,7 @@ app.include_router(quotations.router, prefix=f"{settings.api_v1_prefix}/quotatio
 app.include_router(fabric_inventory.router, prefix=f"{settings.api_v1_prefix}/fabric-inventory", tags=["fabric-inventory"])
 app.include_router(fabric_receipts.router, prefix=f"{settings.api_v1_prefix}/fabric-receipts", tags=["fabric-receipts"])
 app.include_router(fabric_shortages.router, prefix=f"{settings.api_v1_prefix}/fabric-shortages", tags=["fabric-shortages"])
+app.include_router(mobile.router, prefix=f"{settings.api_v1_prefix}/mobile", tags=["mobile"])
 app.include_router(fabric_orders.router, prefix=f"{settings.api_v1_prefix}/fabric-operations", tags=["fabric-operations"])
 app.include_router(contractors.router, prefix=f"{settings.api_v1_prefix}/contractors", tags=["contractors"])
 app.include_router(capacity.router, prefix=f"{settings.api_v1_prefix}/capacity", tags=["capacity"])

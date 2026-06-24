@@ -3,7 +3,7 @@ import axios, { AxiosError } from "axios";
 import { useAuthStore } from "../store/authStore";
 
 export const DEFAULT_API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "https://added-edward-portable-bali.trycloudflare.com";
+  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function normalizeApiBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
@@ -77,7 +77,7 @@ export function getApiErrorMessage(error: unknown): string {
       return detail;
     }
     if (error.code === "ERR_NETWORK") {
-      return `Cannot reach the factory server at ${getApiBaseUrl()}. Check the internet connection and Cloudflare tunnel.`;
+      return `Cannot reach the factory server at ${getApiBaseUrl()}. Check that the backend is running on port 8000.`;
     }
     if (error.code === "ECONNABORTED") {
       return `The factory server did not respond in time at ${getApiBaseUrl()}.`;

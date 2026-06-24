@@ -10,7 +10,17 @@ export interface VoiceArtifact {
 
 export interface VoiceAskResponse {
   answer: string;
+  speech_text?: string | null;
   artifacts: VoiceArtifact[];
+  pending_action?: {
+    action_id: string;
+    intent: string;
+    po_number?: string | null;
+    entities: Record<string, unknown>;
+    missing_fields: string[];
+    confirmation_message?: string | null;
+  } | null;
+  requires_confirmation?: boolean;
 }
 
 export async function askAssistant(message: string): Promise<VoiceAskResponse> {

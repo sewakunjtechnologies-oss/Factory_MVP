@@ -1,0 +1,173 @@
+{
+  "project_name": "Factory MVP / Factory Control",
+  "generated_at": "2026-06-19",
+  "backend": {
+    "framework": "FastAPI 0.115.0 on Python 3.11 in Docker",
+    "status": "Partially working: container healthy, compile passes, API smoke checks pass, full tests have one AI assistant failure",
+    "run_command": "docker compose up -d --build",
+    "test_command": "backend/.venv/bin/python -m pytest backend/tests -q",
+    "api_base_path": "/api/v1",
+    "api_route_count": 123,
+    "deployment_blockers": [
+      "Backend test suite is not fully green",
+      "Role permissions are collapsed to owner/manager rather than the full role matrix",
+      "Secrets and demo credentials must be cleaned before public deployment",
+      "Backup/restore is not active for SQLite"
+    ]
+  },
+  "frontend": {
+    "framework": "React 19 + TypeScript + Vite 8 + Tailwind",
+    "status": "Build and lint pass; Android/web voice needs device QA",
+    "run_command": "cd frontend && npm run dev -- --host 0.0.0.0",
+    "build_command": "cd frontend && npm run build",
+    "deployment_blockers": [
+      "Capacitor Android assets must be regenerated after latest frontend changes",
+      "No frontend automated test script is configured",
+      "Voice input/output not manually verified in this audit"
+    ]
+  },
+  "database": {
+    "type": "SQLite via aiosqlite",
+    "active_runtime_path": "/app/data/factory.db in Docker, mounted from root ./data",
+    "migration_status": "SQL migrations exist, but active DB has no alembic_version table; app uses SQLAlchemy create_all and schema helpers",
+    "seed_status": "Current active DB has 37 JUNE-* POs; no seed/reset run during audit",
+    "current_counts": {
+      "users": 5,
+      "purchase_orders": 37,
+      "products": 37,
+      "product_fabric_lines": 37,
+      "fabric_plans": 37,
+      "fabric_mill_orders": 18,
+      "dispatch_loads": 5,
+      "packing_material_inventory": 53,
+      "alerts": 46,
+      "reminders": 55,
+      "report_requests": 35,
+      "vehicles": 6
+    }
+  },
+  "ai_assistant": {
+    "status": "Partially working",
+    "endpoint": "POST /api/v1/voice/ask",
+    "text_input": "Working in authenticated API smoke test",
+    "voice_input": "Implemented as manual hold-to-speak through browser SpeechRecognition or Capacitor native plugin; not manually verified in this audit",
+    "voice_output": "Implemented through browser speechSynthesis or Capacitor native TextToSpeech; not manually verified in this audit",
+    "pdf_generation": "Integrated through report tools/artifacts; existing report rows/files present",
+    "known_issues": [
+      "One backend AI audit test fails because a fabric-shortage query returns a packing-material fallback in the isolated test DB",
+      "Gemini fallback can fail if API key, quota, or model access is wrong",
+      "Manager can use /voice/ask because route uses owner-or-manager dependency",
+      "Live websocket voice exists but current React page uses request/response hold-to-speak"
+    ]
+  },
+  "android_readiness": {
+    "current_type": "Responsive React web app with PWA support and Capacitor Android wrapper",
+    "pwa_ready": true,
+    "capacitor_ready": true,
+    "recommended_option": "Use the existing Capacitor Android wrapper for a short testing APK, pointing it at a stable backend URL",
+    "required_work": [
+      "Choose backend URL reachable by the Android phone",
+      "Regenerate frontend build and run npm run android:sync",
+      "Build fresh APK",
+      "Test login, dashboard, POs, packing materials, dispatch planner, assistant text, hold-to-speak, voice output, and PDF download on device",
+      "Clean stale containers and secure env secrets"
+    ]
+  },
+  "services": [
+    {
+      "name": "Local Docker/server laptop",
+      "purpose": "Run backend/static frontend and SQLite DB",
+      "free_or_paid": "Free hardware-dependent",
+      "current_use": "Active local container on port 8000",
+      "credentials_configured": true,
+      "owner_payment_needed": false,
+      "required_for_android_testing": true
+    },
+    {
+      "name": "SQLite",
+      "purpose": "Persistent app database",
+      "free_or_paid": "Free",
+      "current_use": "Active via Docker bind mount",
+      "credentials_configured": false,
+      "owner_payment_needed": false,
+      "required_for_android_testing": true
+    },
+    {
+      "name": "Google Gemini API",
+      "purpose": "AI assistant fallback model",
+      "free_or_paid": "Depends on Google quota/billing",
+      "current_use": "Configured in local env; deterministic assistant answers work for many factory questions first",
+      "credentials_configured": true,
+      "owner_payment_needed": "Maybe, depending on quota",
+      "required_for_android_testing": "Required only for broad Gemini fallback"
+    },
+    {
+      "name": "Fly.io",
+      "purpose": "Optional cloud hosting",
+      "free_or_paid": "Free/paid depending usage",
+      "current_use": "Documented, not active",
+      "credentials_configured": false,
+      "owner_payment_needed": "Maybe",
+      "required_for_android_testing": false
+    },
+    {
+      "name": "Backblaze B2",
+      "purpose": "Optional database backup storage",
+      "free_or_paid": "Free/paid depending storage",
+      "current_use": "Documented, not active",
+      "credentials_configured": false,
+      "owner_payment_needed": "Maybe",
+      "required_for_android_testing": false
+    },
+    {
+      "name": "Google Play Developer",
+      "purpose": "Play Store/internal testing distribution",
+      "free_or_paid": "Paid one-time account",
+      "current_use": "Not configured",
+      "credentials_configured": false,
+      "owner_payment_needed": true,
+      "required_for_android_testing": false
+    }
+  ],
+  "critical_blockers": [
+    "Local secrets exist in env files and must be protected/rotated if exposed",
+    "No active SQLite backup/restore strategy",
+    "Backend test suite has one failing AI assistant test",
+    "Android APK must be rebuilt/synced after latest frontend changes before testing"
+  ],
+  "recommended_next_steps": [
+    "Fix the failing backend assistant audit test or document it as accepted risk",
+    "Pick the Android test backend URL and update frontend env accordingly",
+    "Run npm run build, npm run android:sync, and build a fresh APK",
+    "Perform device QA on login, dashboard, PO pages, packing materials, dispatch planner, assistant voice, and PDF downloads",
+    "Move secrets to deployment environment variables and change demo passwords before external testing"
+  ],
+  "verification": {
+    "passed": [
+      "python3 -m compileall backend/app",
+      "docker exec factory_mvp_server python -m compileall app",
+      "backend/.venv/bin/python -m compileall backend/tests",
+      "cd frontend && npm ls --depth=0",
+      "cd frontend && npm run lint",
+      "cd frontend && npm run build",
+      "GET /health",
+      "Authenticated smoke checks for dashboard, purchase orders, packing materials, vehicles, reports list, mill orders, assistant, and dispatch planner"
+    ],
+    "failed": [
+      {
+        "command": "backend/.venv/bin/python -m pytest backend/tests -q",
+        "result": "1 failed, 37 passed, 4 skipped",
+        "failure": "test_factory_assistant_audit.py expected a shortage answer containing 109-SHORT-FLORA-JUNE, but assistant returned a packing-material fallback"
+      },
+      {
+        "command": "PYTHONPATH=backend python3 route import smoke",
+        "result": "failed in host system Python",
+        "failure": "ModuleNotFoundError: No module named 'aiosqlite'; use backend/.venv or Docker"
+      }
+    ],
+    "not_run_to_avoid_data_changes": [
+      "Seed/reset scripts",
+      "New PDF generation"
+    ]
+  }
+}

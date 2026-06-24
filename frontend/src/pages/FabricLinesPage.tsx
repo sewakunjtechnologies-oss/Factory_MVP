@@ -12,7 +12,7 @@ import {
   useUpdateProductFabricLine,
 } from "../hooks/useProductFabricLines";
 import { useProducts } from "../hooks/usePurchaseOrders";
-import type { ProductFabricLineRead, StageStatus, StockStatus } from "../api/productFabricLines";
+import type { ProductFabricLineRead, ProductFabricLineUpdate, StageStatus, StockStatus } from "../api/productFabricLines";
 import type { ProductRead, UUID } from "../types/api";
 import { todayISO } from "../utils/forms";
 import { formatMeters, formatNumber } from "../utils/format";
@@ -75,7 +75,7 @@ export default function FabricLinesPage() {
     return map;
   }, [productsQuery.data]);
 
-  const allLines = linesQuery.data ?? [];
+  const allLines = useMemo(() => linesQuery.data ?? [], [linesQuery.data]);
 
   const filteredLines = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -136,6 +136,10 @@ export default function FabricLinesPage() {
 
   function onStageChange(line: ProductFabricLineRead, stage: Stage, value: StageStatus) {
     updateLine.mutate({ id: line.id, payload: { [stage]: value } });
+  }
+
+  function onLineChange(line: ProductFabricLineRead, payload: ProductFabricLineUpdate) {
+    updateLine.mutate({ id: line.id, payload });
   }
 
   function triggerExcelExport() {
@@ -241,6 +245,7 @@ export default function FabricLinesPage() {
             product={product}
             lines={lines}
             onStageChange={onStageChange}
+            onLineChange={onLineChange}
             onAddStock={(row) => setStockDialog({ open: true, preselected: row })}
             disabled={updateLine.isPending}
           />
@@ -294,12 +299,14 @@ function ProductSection({
   product,
   lines,
   onStageChange,
+  onLineChange,
   onAddStock,
   disabled,
 }: {
   product: ProductRead | undefined;
   lines: ProductFabricLineRead[];
   onStageChange: (line: ProductFabricLineRead, stage: Stage, value: StageStatus) => void;
+  onLineChange: (line: ProductFabricLineRead, payload: ProductFabricLineUpdate) => void;
   onAddStock: (line: ProductFabricLineRead) => void;
   disabled?: boolean;
 }) {
@@ -372,12 +379,51 @@ function ProductSection({
                       <StockStatusBadge status={row.stock_status} piecesShort={row.pieces_short} />
                     </div>
                   </td>
-                  <td className="num-cell px-3 py-3 text-slate-700">{formatNumber(row.pieces)}</td>
-                  <td className="num-cell px-3 py-3 font-semibold text-emerald-700">{formatNumber(row.pieces_in_stock)}</td>
+                  <td className="px-3 py-3 text-right">
+                    <EditableNumberCell
+                      value={row.pieces}
+                      disabled={disabled}
+                      min={0}
+                      step={1}
+                      ariaLabel={`Target pieces for ${row.fabric_code}`}
+                      onCommit={(value) => onLineChange(row, { pieces: Math.round(value) })}
+                    />
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    <EditableNumberCell
+                      value={row.pieces_in_stock}
+                      disabled={disabled}
+                      min={0}
+                      step={1}
+                      tone="success"
+                      ariaLabel={`Pieces in stock for ${row.fabric_code}`}
+                      onCommit={(value) => onLineChange(row, { pieces_in_stock: Math.round(value) })}
+                    />
+                  </td>
                   <td className="num-cell px-3 py-3 text-slate-700">{formatNumber(remaining)}</td>
-                  <td className="num-cell px-3 py-3 text-slate-500">{num(row.per_piece_meters).toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">
+                    <EditableNumberCell
+                      value={num(row.per_piece_meters)}
+                      disabled={disabled}
+                      min={0}
+                      step={0.001}
+                      decimals={3}
+                      ariaLabel={`Meter per piece consumption for ${row.fabric_code}`}
+                      onCommit={(value) => onLineChange(row, { per_piece_meters: value })}
+                    />
+                  </td>
                   <td className="num-cell px-3 py-3 text-slate-700">{formatMeters(need)}</td>
-                  <td className="num-cell px-3 py-3 text-slate-700">{formatMeters(num(row.stock_meters))}</td>
+                  <td className="px-3 py-3 text-right">
+                    <EditableNumberCell
+                      value={num(row.stock_meters)}
+                      disabled={disabled}
+                      min={0}
+                      step={0.001}
+                      decimals={3}
+                      ariaLabel={`Fabric meters on hand for ${row.fabric_code}`}
+                      onCommit={(value) => onLineChange(row, { stock_meters: value })}
+                    />
+                  </td>
                   <td className={`num-cell px-3 py-3 ${short > 0 ? "font-semibold text-red-700" : "text-slate-300"}`}>
                     {short > 0 ? formatMeters(short) : "—"}
                   </td>
@@ -426,6 +472,64 @@ function SummaryStat({ label, value, tone }: { label: string; value: string; ton
       <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
       <dd className={`text-xs font-semibold ${cls}`}>{value}</dd>
     </div>
+  );
+}
+
+function EditableNumberCell({
+  value,
+  disabled,
+  min,
+  step,
+  decimals = 0,
+  tone,
+  ariaLabel,
+  onCommit,
+}: {
+  value: number;
+  disabled?: boolean;
+  min?: number;
+  step?: number;
+  decimals?: number;
+  tone?: "success";
+  ariaLabel: string;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(decimals > 0 ? value.toFixed(decimals) : String(Math.round(value)));
+
+  useEffect(() => {
+    setDraft(decimals > 0 ? value.toFixed(decimals) : String(Math.round(value)));
+  }, [decimals, value]);
+
+  function commit() {
+    const parsed = Number(draft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(decimals > 0 ? value.toFixed(decimals) : String(Math.round(value)));
+      return;
+    }
+    const normalized = Math.max(min ?? 0, parsed);
+    if (Math.abs(normalized - value) < 0.0005) return;
+    onCommit(normalized);
+  }
+
+  const toneClass = tone === "success" ? "text-emerald-700" : "text-slate-700";
+  return (
+    <input
+      type="number"
+      inputMode={decimals > 0 ? "decimal" : "numeric"}
+      min={min}
+      step={step}
+      className={`h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-right text-xs font-semibold tabular-nums outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:bg-slate-50 disabled:text-slate-400 ${toneClass}`}
+      value={draft}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+    />
   );
 }
 
