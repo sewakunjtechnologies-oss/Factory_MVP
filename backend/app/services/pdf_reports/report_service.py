@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.report_request import ReportRequest, ReportRequestStatus
+from app.core.config import settings
 from app.services.pdf_reports.data_access import FactoryAIDataAccess
 from app.services.pdf_reports.report_registry import get_report_definition
 from app.services.pdf_reports.report_renderer import render_report_pdf
@@ -18,7 +19,8 @@ from app.services.pdf_reports.report_schemas import ReportGenerateRequest, Repor
 class ReportService:
     def __init__(self, db: AsyncSession, reports_dir: Optional[Path] = None) -> None:
         self.db = db
-        self.reports_dir = reports_dir or (Path(__file__).resolve().parents[3] / "generated_reports")
+        self.reports_dir = reports_dir or Path(settings.report_output_dir)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
 
     async def create_request(self, payload: ReportGenerateRequest, requested_by: UUID | None) -> ReportRequest:
         definition = get_report_definition(payload.report_type)
@@ -97,3 +99,9 @@ class ReportService:
         filename = f"{safe_name}_{report_id}.pdf"
         return self.reports_dir / filename
 
+    def is_safe_report_path(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self.reports_dir.resolve())
+            return True
+        except ValueError:
+            return False

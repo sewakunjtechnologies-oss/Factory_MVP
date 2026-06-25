@@ -21,9 +21,9 @@ const config: CapacitorConfig = {
   webDir: "dist",
   bundledWebRuntime: false,
   android: {
-    // Allow HTTP API calls during the 1-week test (Android blocks cleartext by
-    // default since API 28). Tighten to your API host when you switch to HTTPS.
-    allowMixedContent: true,
+    // Cloud builds require HTTPS. Local LAN test builds can opt in with
+    // VITE_ALLOW_LOCAL_HTTP=true.
+    allowMixedContent: process.env.VITE_ALLOW_LOCAL_HTTP === "true",
   },
   // server: {
   //   url: "http://192.168.1.50:5173",

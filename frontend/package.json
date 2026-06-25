@@ -9,8 +9,13 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "android:sync": "npm run build && npx cap sync android",
+    "android:build:cloud": "ANDROID_API_MODE=cloud npm run build && ANDROID_API_MODE=cloud node scripts/check_android_api_url.mjs && npx cap sync android",
+    "android:build:local": "ANDROID_API_MODE=local VITE_ALLOW_LOCAL_HTTP=true npm run build && ANDROID_API_MODE=local VITE_ALLOW_LOCAL_HTTP=true node scripts/check_android_api_url.mjs && VITE_ALLOW_LOCAL_HTTP=true npx cap sync android",
     "android:open": "npx cap open android",
-    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
+    "android:apk": "npm run android:build:cloud && cd android && ./gradlew assembleDebug",
+    "android:apk:debug": "npm run android:build:cloud && cd android && ./gradlew assembleDebug",
+    "android:apk:local": "npm run android:build:local && cd android && ./gradlew assembleDebug -PallowCleartext",
+    "android:apk:release": "npm run android:build:cloud && cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.5",

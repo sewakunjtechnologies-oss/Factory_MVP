@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -52,6 +54,37 @@ if _is_sqlite:
 async def get_db() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+def sqlite_database_path() -> Path | None:
+    if not _is_sqlite:
+        return None
+    url = settings.database_url
+    if url.startswith("sqlite+aiosqlite:///"):
+        raw = url.removeprefix("sqlite+aiosqlite:///")
+    elif url.startswith("sqlite:///"):
+        raw = url.removeprefix("sqlite:///")
+    else:
+        parsed = urlparse(url)
+        raw = parsed.path
+    if raw in {":memory:", "/:memory:"}:
+        return None
+    if raw.startswith("/"):
+        return Path(unquote(raw))
+    return Path(unquote(raw)).resolve()
+
+
+def ensure_sqlite_database_writable() -> None:
+    path = sqlite_database_path()
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    probe = path.parent / ".factory_write_probe"
+    try:
+        probe.write_text("ok")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"SQLite directory is not writable: {path.parent}") from exc
 
 
 async def create_all_tables() -> None:

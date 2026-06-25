@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pathlib
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict
 
@@ -41,7 +42,7 @@ from app.api.v1.routes import (
     voice_ws,
 )
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal, create_all_tables
+from app.core.database import AsyncSessionLocal, create_all_tables, ensure_sqlite_database_writable, sqlite_database_path
 from app.services.exceptions import DomainError
 from app.services.operational_backfill import ensure_all_operational_data
 from app.services.packing_material_service import ensure_packing_material_schema
@@ -50,16 +51,24 @@ from app.services.scheduler import shutdown_scheduler, start_scheduler
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    ensure_sqlite_database_writable()
+    pathlib.Path(settings.report_output_dir).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+    active_db = sqlite_database_path()
+    if active_db is not None:
+        print(f"Factory database path: {active_db}")
     # Provision schema on first boot (idempotent — no-op once the file exists).
     await create_all_tables()
     async with AsyncSessionLocal() as session:
         await ensure_packing_material_schema(session)
         await ensure_all_operational_data(session)
-    start_scheduler()
+    if not settings.disable_scheduler:
+        start_scheduler()
     try:
         yield
     finally:
-        shutdown_scheduler()
+        if not settings.disable_scheduler:
+            shutdown_scheduler()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -147,7 +156,6 @@ async def health() -> Dict[str, str]:
 #                   client-side React Router can take over.
 # ---------------------------------------------------------------------------
 
-import pathlib
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 

@@ -5,6 +5,7 @@ from typing_extensions import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.auth import LoginRequest, LoginResponse, RegisterRequest
 from app.services.user_service import authenticate_user, register_user
@@ -14,6 +15,10 @@ router = APIRouter()
 
 @router.post("/register", response_model=LoginResponse, status_code=201)
 async def register(payload: RegisterRequest, db: Annotated[AsyncSession, Depends(get_db)]) -> LoginResponse:
+    if not settings.allow_public_registration:
+        from app.services.exceptions import DomainError
+
+        raise DomainError(status_code=403, detail="Public registration is disabled for this deployment.")
     return await register_user(db, payload)
 
 

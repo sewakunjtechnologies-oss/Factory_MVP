@@ -88,7 +88,8 @@ async def download_pdf_report(
     if row.status.value != "completed" or not row.file_path:
         raise DomainError(status_code=400, detail="Report is not ready for download")
     path = Path(row.file_path)
+    if not service.is_safe_report_path(path):
+        raise DomainError(status_code=400, detail="Report file path is invalid")
     if not path.exists():
         raise DomainError(status_code=404, detail="Report file not found on disk")
     return FileResponse(path=str(path), media_type="application/pdf", filename=path.name)
-
