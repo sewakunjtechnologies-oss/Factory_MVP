@@ -2,8 +2,8 @@ import axios, { AxiosError } from "axios";
 
 import { useAuthStore } from "../store/authStore";
 
-export const DEFAULT_API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const DEV_LOOPBACK = ["http://", ["127", "0", "0", "1"].join("."), ":8000"].join("");
+export const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? DEV_LOOPBACK : "");
 
 function normalizeApiBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");

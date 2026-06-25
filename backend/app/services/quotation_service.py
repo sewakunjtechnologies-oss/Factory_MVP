@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.purchase_order import PurchaseOrder
 from app.schemas.quotation import POQuotationRead, QuotationLineRead
 from app.services.exceptions import DomainError
@@ -76,7 +77,7 @@ async def build_po_quotation(db: AsyncSession, po_number: str) -> POQuotationRea
 
 async def generate_po_quotation_pdf(db: AsyncSession, po_number: str, *, output_dir: Path | None = None) -> tuple[POQuotationRead, Path]:
     quotation = await build_po_quotation(db, po_number)
-    output_dir = output_dir or (Path(__file__).resolve().parents[2] / "generated_reports")
+    output_dir = output_dir or Path(settings.report_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_po = "".join(ch if ch.isalnum() or ch in {"-", "_", "#"} else "_" for ch in quotation.po_number)
     output_path = output_dir / f"quotation_{safe_po}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.pdf"

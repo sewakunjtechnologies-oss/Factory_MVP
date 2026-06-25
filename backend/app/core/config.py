@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import List, Optional, Union
 
 from pydantic import Field, field_validator
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     # "gemini-2.5-flash" id does NOT support bidiGenerateContent.
     gemini_model: str = "gemini-2.5-flash"
     gemini_live_model: str = "gemini-2.5-flash-preview-native-audio-dialog"
+    report_output_dir: str = Field(default_factory=lambda: str(Path(__file__).resolve().parents[2] / "generated_reports"))
+    upload_dir: str = Field(default_factory=lambda: str(Path(__file__).resolve().parents[2] / "uploads"))
+    environment: str = "development"
+    allow_public_registration: bool = True
+    disable_scheduler: bool = False
     cors_origins: List[str] = [
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",

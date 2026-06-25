@@ -51,7 +51,7 @@ COPY --from=frontend /build/dist ./static
 
 # Persistent SQLite directory. In production this is overlaid by a Fly volume
 # (or a docker bind mount) — the directory must exist before the mount.
-RUN mkdir -p /app/data /app/generated_reports
+RUN mkdir -p /app/data/generated_reports /app/data/uploads
 
 # Run as non-root.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
@@ -61,6 +61,10 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+    CMD curl -fsS http://127.0.0.1:${PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV DATABASE_URL=sqlite+aiosqlite:////app/data/factory.db \
+    REPORT_OUTPUT_DIR=/app/data/generated_reports \
+    UPLOAD_DIR=/app/data/uploads
+
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

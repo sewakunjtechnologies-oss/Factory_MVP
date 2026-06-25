@@ -8,13 +8,33 @@ venv/
 
 # Local data + secrets
 /.env
+/.env.*
+!.env.server.example
 **/data/
 backend/.env
+backend/.env.*
+!backend/.env.production.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.production.example
+!frontend/.env.android.local.example
 backend/uploads/
 backend/generated_reports/
+generated_reports/
+deployment_backups/
+deployment_private/
+backups/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+*.jks
+*.keystore
+keystore.properties
+frontend/android/keystore.properties
+*.pem
+*.key
 
 # IDE
 .vscode/
