@@ -1,0 +1,51 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: factory_backend_api
+    environment:
+      APP_NAME: Factory Owner MVP
+      API_V1_PREFIX: /api/v1
+      # API uses SQLite. The Postgres service alongside is only kept alive so the
+      # one-time data-migration script can read the old data from it. Remove the
+      # postgres: service from this file once Phase 2.6 is done.
+      DATABASE_URL: sqlite+aiosqlite:////app/data/factory.db
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      SECRET_KEY: change-me-in-production-docker
+      ACCESS_TOKEN_EXPIRE_MINUTES: 10080  # 7 days
+      ALGORITHM: HS256
+      # Permissive in dev; the production container (`factory-product`) already
+      # uses ["*"]. Tighten when you put a real domain in front.
+      CORS_ORIGINS: '["*"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite + frontend bundle are both bind-mounted in dev so we can rebuild
+      # the React app and hot-swap it without rebuilding the API container.
+      - ./data:/app/data
+      - ./static:/app/static:ro
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: factory_postgres
+    environment:
+      POSTGRES_DB: factory_mvp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d factory_mvp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
